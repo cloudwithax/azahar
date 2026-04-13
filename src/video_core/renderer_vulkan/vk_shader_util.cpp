@@ -205,9 +205,17 @@ std::vector<u32> CompileGLSL(std::string_view code, vk::ShaderStageFlagBits stag
     glslang::SpvOptions options;
 
     // Controls optimizations on the generated SPIR-V code.
+    // On Android (Mali/mobile), disable the optimizer entirely — the compilation time
+    // savings far outweigh the minor shader quality loss. Mali's driver does its own
+    // optimizations on the SPIR-V input anyway.
+#ifdef ANDROID
+    options.disableOptimizer = true;
+    options.optimizeSize = false;
+#else
     options.disableOptimizer = Settings::values.disable_spirv_optimizer.GetValue();
-    options.validate = false;
     options.optimizeSize = true;
+#endif
+    options.validate = false;
 
     out_code.reserve(8_KiB);
     glslang::GlslangToSpv(*intermediate, out_code, &logger, &options);
