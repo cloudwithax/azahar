@@ -280,6 +280,30 @@ Frame* PresentWindow::GetRenderFrame() {
     return frame;
 }
 
+Frame* PresentWindow::TryGetRenderFrame() {
+    // Non-blocking: return nullptr if no free frame is available.
+    std::unique_lock lock{free_mutex};
+    if (free_queue.empty()) {
+        return nullptr;
+    }
+
+    Frame* frame = free_queue.front();
+    free_queue.pop();
+
+    vk::Device device = instance.GetDevice();
+
+    // Check fence with zero timeout - don't block.
+    vk::Result result = device.waitForFences(frame->present_done, false, 0);
+    if (result != vk::Result::eSuccess) {
+        // Frame not ready yet, put it back.
+        free_queue.push(frame);
+        return nullptr;
+    }
+
+    device.resetFences(frame->present_done);
+    return frame;
+}
+
 void PresentWindow::Present(Frame* frame) {
     if (!use_present_thread) {
         scheduler.WaitWorker(0);
