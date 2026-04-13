@@ -301,7 +301,8 @@ private:
         size_t cached_file_data_start{};
         std::vector<u8> cached_file_data;
         std::atomic<size_t> next_entry_id = SIZE_MAX;
-        Common::ThreadWorker append_worker{1, "Disk Shader Cache Append Worker"};
+        Common::ThreadWorker append_worker{1, "Disk Shader Cache Append Worker", {},
+                                           Common::ThreadPriority::Low};
     };
 
     std::string GetVSFile(u64 title_id, bool is_temp) const;

@@ -5,7 +5,7 @@
 package org.citra.citra_emu.utils
 import android.app.Activity
 import android.os.Build
-import androidx.annotation.RequiresApi
+import android.view.Surface
 
 object RefreshRateUtil {
     // Since Android 15, the OS automatically runs apps categorized as games with a
@@ -48,6 +48,20 @@ object RefreshRateUtil {
             }
 
             window.attributes.preferredDisplayModeId = newModeId
+        }
+    }
+
+    fun setGameSurfaceFrameRate(surface: Surface, fps: Float = 60f) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return
+        }
+
+        try {
+            surface.setFrameRate(fps, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+        } catch (_: IllegalStateException) {
+            // Ignore transient surface lifecycle issues.
+        } catch (_: UnsupportedOperationException) {
+            // Some vendors reject frame-rate hints on specific surfaces.
         }
     }
 }

@@ -37,10 +37,12 @@ class StatefulThreadWorker {
 
 public:
     explicit StatefulThreadWorker(std::size_t num_workers, std::string_view name,
-                                  StateMaker func = {})
+                                  StateMaker func = {},
+                                  ThreadPriority priority = ThreadPriority::Normal)
         : workers_queued{num_workers}, thread_name{name} {
-        const auto lambda = [this, func](std::stop_token stop_token, std::size_t index) {
+        const auto lambda = [this, func, priority](std::stop_token stop_token, std::size_t index) {
             Common::SetCurrentThreadName(thread_name.data());
+            Common::SetCurrentThreadPriority(priority);
             {
                 [[maybe_unused]] std::conditional_t<with_state, StateType, int> state{func(index)};
                 while (!stop_token.stop_requested()) {

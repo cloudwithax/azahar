@@ -87,8 +87,9 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       num_worker_threads{std::thread::hardware_concurrency() <= 4
                              ? 1U
                              : std::thread::hardware_concurrency() / 2},
-      pipeline_workers{num_worker_threads, "Pipeline workers"},
-      shader_workers{num_worker_threads, "Shader workers"},
+      pipeline_workers{num_worker_threads, "Pipeline workers", {},
+                       Common::ThreadPriority::Low},
+      shader_workers{num_worker_threads, "Shader workers", {}, Common::ThreadPriority::Low},
       descriptor_heaps{
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), BUFFER_BINDINGS, 32},
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), TEXTURE_BINDINGS<1>},
