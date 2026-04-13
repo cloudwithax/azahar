@@ -165,7 +165,17 @@ RendererVulkan::~RendererVulkan() {
 void RendererVulkan::PrepareRendertarget() {
     const auto& framebuffer_config = pica.regs.framebuffer_config;
     const auto& regs_lcd = pica.regs_lcd;
+    const bool alias_right_eye = system.GPU().IsRightEyeDisabledForCurrentProgram();
     for (u32 i = 0; i < 3; i++) {
+        if (i == 1 && alias_right_eye) {
+            // The right-eye-disable hack blocks the guest from producing a distinct
+            // top-screen right-eye image. Reusing the left-eye image avoids a second
+            // display-surface lookup/upload on every frame.
+            screen_infos[i].image_view = screen_infos[0].image_view;
+            screen_infos[i].texcoords = screen_infos[0].texcoords;
+            continue;
+        }
+
         const u32 fb_id = i == 2 ? 1 : 0;
         const auto& framebuffer = framebuffer_config[fb_id];
         auto& texture = screen_infos[i].texture;
