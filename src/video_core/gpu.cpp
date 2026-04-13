@@ -312,6 +312,12 @@ GraphicsDebugger& GPU::Debugger() {
     return impl->gpu_debugger;
 }
 
+bool GPU::IsRightEyeDisabledForCurrentProgram() const {
+    return Common::Hacks::hack_manager.OverrideBooleanSetting(
+        Common::Hacks::HackType::RIGHT_EYE_DISABLE, impl->current_program_id,
+        Settings::values.disable_right_eye_render.GetValue());
+}
+
 void GPU::ApplyPerProgramSettings(u64 program_ID) {
     impl->current_program_id = program_ID;
     const bool use_accurate_mul = Common::Hacks::hack_manager.OverrideBooleanSetting(

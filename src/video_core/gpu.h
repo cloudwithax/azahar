@@ -94,6 +94,8 @@ public:
         return *right_eye_disabler;
     }
 
+    [[nodiscard]] bool IsRightEyeDisabledForCurrentProgram() const;
+
     void ApplyPerProgramSettings(u64 program_ID);
 
     /// Recreates the renderer (for GL context reset in libretro)
