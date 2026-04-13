@@ -277,6 +277,9 @@ public:
     AttributeBuffer input_default_attributes{};
     ImmediateModeState immediate{};
 
+    static constexpr std::size_t VERTEX_CACHE_SIZE = 256;
+    std::array<u32, VERTEX_CACHE_SIZE> vertex_cache_ids{};
+
 private:
     friend class boost::serialization::access;
     template <class Archive>

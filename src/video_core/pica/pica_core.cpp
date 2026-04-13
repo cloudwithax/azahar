@@ -148,25 +148,18 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
         return;
     }
 
-    // Expand a 4-bit mask to 4-byte mask, e.g. 0b0101 -> 0x00FF00FF
     constexpr std::array<u32, 16> ExpandBitsToBytes = {
         0x00000000, 0x000000ff, 0x0000ff00, 0x0000ffff, 0x00ff0000, 0x00ff00ff,
         0x00ffff00, 0x00ffffff, 0xff000000, 0xff0000ff, 0xff00ff00, 0xff00ffff,
         0xffff0000, 0xffff00ff, 0xffffff00, 0xffffffff,
     };
 
-    // TODO: Figure out how register masking acts on e.g. vs.uniform_setup.set_value
     const u32 old_value = regs.internal.reg_array[id];
     const u32 write_mask = ExpandBitsToBytes[mask];
     regs.internal.reg_array[id] = (old_value & ~write_mask) | (value & write_mask);
 
-    // Track register write.
-    DebugUtils::OnPicaRegWrite(id, mask, regs.internal.reg_array[id]);
-
-    // Track events.
-    if (debug_context) {
-        debug_context->OnEvent(DebugContext::Event::PicaCommandLoaded, &id);
-    }
+    const bool gs_unit_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
+    const bool use_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
 
     switch (id) {
     // Trigger IRQ
@@ -284,16 +277,14 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
     }
 
     case PICA_REG_INDEX(vs.output_mask):
-        if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
-            regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) {
+        if (!gs_unit_exclusive && !use_gs) {
             regs.internal.gs.output_mask.Assign(value);
         }
         break;
 
     case PICA_REG_INDEX(vs.bool_uniforms):
         vs_setup.WriteUniformBoolReg(regs.internal.vs.bool_uniforms.Value());
-        if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
-            regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) {
+        if (!gs_unit_exclusive && !use_gs) {
             gs_setup.WriteUniformBoolReg(regs.internal.vs.bool_uniforms.Value());
         }
         break;
@@ -304,8 +295,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
     case PICA_REG_INDEX(vs.int_uniforms[3]): {
         const u32 index = (id - PICA_REG_INDEX(vs.int_uniforms[0]));
         vs_setup.WriteUniformIntReg(index, regs.internal.vs.GetIntUniform(index));
-        if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
-            regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) {
+        if (!gs_unit_exclusive && !use_gs) {
             gs_setup.WriteUniformIntReg(index, regs.internal.vs.GetIntUniform(index));
         }
         break;
@@ -320,8 +310,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
     case PICA_REG_INDEX(vs.uniform_setup.set_value[6]):
     case PICA_REG_INDEX(vs.uniform_setup.set_value[7]): {
         const auto index = vs_setup.WriteUniformFloatReg(regs.internal.vs, value);
-        if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
-            regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No && index) {
+        if (!gs_unit_exclusive && !use_gs && index) {
             gs_setup.uniforms.f[index.value()] = vs_setup.uniforms.f[index.value()];
         }
         break;
@@ -340,8 +329,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
             LOG_ERROR(HW_GPU, "Invalid VS program offset {}", offset);
         } else {
             vs_setup.UpdateProgramCode(offset, value);
-            if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
-                regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) {
+            if (!gs_unit_exclusive && !use_gs) {
                 gs_setup.UpdateProgramCode(offset, value);
             }
             offset++;
@@ -362,8 +350,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
             LOG_ERROR(HW_GPU, "Invalid VS swizzle pattern offset {}", offset);
         } else {
             vs_setup.UpdateSwizzleData(offset, value);
-            if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
-                regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) {
+            if (!gs_unit_exclusive && !use_gs) {
                 gs_setup.UpdateSwizzleData(offset, value);
             }
             offset++;
@@ -444,10 +431,6 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
     }
 
     dirty_regs.Set(id);
-
-    if (debug_context) {
-        debug_context->OnEvent(DebugContext::Event::PicaCommandProcessed, &id);
-    }
 }
 
 void PicaCore::SubmitImmediate(u32 value) {
@@ -568,37 +551,30 @@ void PicaCore::DrawArrays(bool is_indexed) {
 }
 
 void PicaCore::LoadVertices(bool is_indexed) {
-    // Read and validate vertex information from the loaders
     const auto& pipeline = regs.internal.pipeline;
     const PAddr base_address = pipeline.vertex_attributes.GetPhysicalBaseAddress();
     const auto loader = VertexLoader(memory, pipeline);
     regs.internal.rasterizer.ValidateSemantics();
 
-    // Locate index buffer.
     const auto& index_info = pipeline.index_array;
     const u8* index_address_8 = memory.GetPhysicalPointer(base_address + index_info.offset);
     const u16* index_address_16 = reinterpret_cast<const u16*>(index_address_8);
     const bool index_u16 = index_info.format != 0;
 
-    // Simple circular-replacement vertex cache
-    const std::size_t VERTEX_CACHE_SIZE = 64;
-    std::array<bool, VERTEX_CACHE_SIZE> vertex_cache_valid{};
-    std::array<u16, VERTEX_CACHE_SIZE> vertex_cache_ids;
+    static constexpr std::size_t VERTEX_CACHE_SIZE = 256;
     std::array<AttributeBuffer, VERTEX_CACHE_SIZE> vertex_cache;
-    u32 vertex_cache_pos = 0;
+    std::array<bool, VERTEX_CACHE_SIZE> vertex_cache_valid{};
+    vertex_cache_valid.fill(false);
 
-    // Compile the vertex shader for this batch.
     ShaderUnit shader_unit;
     AttributeBuffer vs_output;
     shader_engine->SetupBatch(vs_setup, regs.internal.vs.main_offset);
 
-    // Setup geometry pipeline in case we are using a geometry shader.
     geometry_pipeline.Reconfigure();
     geometry_pipeline.Setup(shader_engine.get());
     ASSERT(!geometry_pipeline.NeedIndexInput() || is_indexed);
 
     for (u32 index = 0; index < pipeline.num_vertices; ++index) {
-        // Indexed rendering doesn't use the start offset
         const u32 vertex = is_indexed
                                ? (index_u16 ? index_address_16[index] : index_address_8[index])
                                : (index + pipeline.vertex_offset);
@@ -610,41 +586,29 @@ void PicaCore::LoadVertices(bool is_indexed) {
                 continue;
             }
 
-            for (u32 i = 0; i < VERTEX_CACHE_SIZE; ++i) {
-                if (vertex_cache_valid[i] && vertex == vertex_cache_ids[i]) {
-                    vs_output = vertex_cache[i];
-                    vertex_cache_hit = true;
-                    break;
-                }
+            const std::size_t cache_slot = vertex & (VERTEX_CACHE_SIZE - 1);
+            if (vertex_cache_valid[cache_slot] && vertex == vertex_cache_ids[cache_slot]) {
+                vs_output = vertex_cache[cache_slot];
+                vertex_cache_hit = true;
             }
         }
 
         if (!vertex_cache_hit) {
-            // Initialize data for the current vertex
             AttributeBuffer input;
             loader.LoadVertex(base_address, index, vertex, input, input_default_attributes);
 
-            // Record vertex processing to the debugger.
-            if (debug_context) {
-                debug_context->OnEvent(DebugContext::Event::VertexShaderInvocation,
-                                       std::addressof(input));
-            }
-
-            // Invoke the vertex shader for this vertex.
             shader_unit.LoadInput(regs.internal.vs, input);
             shader_engine->Run(vs_setup, shader_unit);
             shader_unit.WriteOutput(regs.internal.vs, vs_output);
 
-            // Cache the vertex when doing indexed rendering.
             if (is_indexed) {
-                vertex_cache[vertex_cache_pos] = vs_output;
-                vertex_cache_valid[vertex_cache_pos] = true;
-                vertex_cache_ids[vertex_cache_pos] = vertex;
-                vertex_cache_pos = (vertex_cache_pos + 1) % VERTEX_CACHE_SIZE;
+                const std::size_t cache_slot = vertex & (VERTEX_CACHE_SIZE - 1);
+                vertex_cache[cache_slot] = vs_output;
+                vertex_cache_valid[cache_slot] = true;
+                vertex_cache_ids[cache_slot] = vertex;
             }
         }
 
-        // Send to geometry pipeline
         geometry_pipeline.SubmitVertex(vs_output);
     }
 }

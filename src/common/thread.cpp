@@ -32,6 +32,37 @@
 #define cpu_set_t cpuset_t
 #endif
 
+#ifdef __ANDROID__
+static int GetMaxBigCore() {
+    FILE* fp = fopen("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", "r");
+    if (!fp) {
+        return -1;
+    }
+    long max_freq = 0;
+    fscanf(fp, "%ld", &max_freq);
+    fclose(fp);
+
+    int best_core = -1;
+    long best_freq = 0;
+    for (int i = 0; i < 8; i++) {
+        char path[128];
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        fp = fopen(path, "r");
+        if (!fp) {
+            break;
+        }
+        long freq = 0;
+        fscanf(fp, "%ld", &freq);
+        fclose(fp);
+        if (freq > best_freq) {
+            best_freq = freq;
+            best_core = i;
+        }
+    }
+    return best_core;
+}
+#endif
+
 namespace Common {
 
 #ifdef _WIN32
@@ -183,6 +214,38 @@ void SetCurrentThreadName(const char*) {
 }
 #endif
 
+#endif
+
+#ifdef __ANDROID__
+void SetThreadAffinityBigCores() {
+    int best_core = GetMaxBigCore();
+    if (best_core < 0) {
+        return;
+    }
+
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+
+    long best_freq = 0;
+    for (int i = 0; i < 8; i++) {
+        char path[128];
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        FILE* fp = fopen(path, "r");
+        if (!fp) {
+            break;
+        }
+        long freq = 0;
+        fscanf(fp, "%ld", &freq);
+        fclose(fp);
+        if (freq >= best_freq) {
+            CPU_SET(i, &mask);
+        }
+    }
+
+    if (CPU_COUNT(&mask) > 0) {
+        sched_setaffinity(static_cast<pid_t>(syscall(__NR_gettid)), sizeof(mask), &mask);
+    }
+}
 #endif
 
 } // namespace Common

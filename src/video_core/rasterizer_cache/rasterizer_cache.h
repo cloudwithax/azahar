@@ -1412,7 +1412,10 @@ void RasterizerCache<T>::UnregisterSurface(SurfaceId surface_id) {
                        page << CITRA_PAGEBITS);
             return;
         }
-        surfaces.erase(vector_it);
+        if (vector_it != surfaces.end() - 1) {
+            *vector_it = surfaces.back();
+        }
+        surfaces.pop_back();
     });
 
     if (surface.type != SurfaceType::Fill) {

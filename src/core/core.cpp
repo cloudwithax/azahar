@@ -104,11 +104,13 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
     Signal signal{Signal::None};
     u32 param{};
     {
-        std::scoped_lock lock{signal_mutex};
-        if (current_signal != Signal::None) {
-            signal = current_signal;
-            param = signal_param;
-            current_signal = Signal::None;
+        if (signal_mutex.try_lock()) {
+            if (current_signal != Signal::None) {
+                signal = current_signal;
+                param = signal_param;
+                current_signal = Signal::None;
+            }
+            signal_mutex.unlock();
         }
     }
     switch (signal) {

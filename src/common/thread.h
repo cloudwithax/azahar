@@ -112,4 +112,8 @@ void SetCurrentThreadPriority(ThreadPriority new_priority);
 
 void SetCurrentThreadName(const char* name);
 
+#ifdef __ANDROID__
+void SetThreadAffinityBigCores();
+#endif
+
 } // namespace Common

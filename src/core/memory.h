@@ -609,7 +609,11 @@ public:
     void RasterizerMarkRegionCached(PAddr start, u32 size, bool cached);
 
     /// For a rasterizer-accessible PAddr, gets a list of all possible VAddr
-    std::vector<VAddr> PhysicalToVirtualAddressForRasterizer(PAddr addr);
+    struct VAddrMapping {
+        VAddr addrs[2];
+        u8 count;
+    };
+    VAddrMapping PhysicalToVirtualAddressForRasterizer(PAddr addr);
 
     /// Gets a pointer to the memory region beginning at the specified physical address.
     u8* GetPhysicalPointer(PAddr address);

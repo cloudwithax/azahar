@@ -178,7 +178,10 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
     LOG_INFO(Frontend, "Azahar starting...");
 
     MicroProfileOnThreadCreate("EmuThread");
-    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::VeryHigh);
+#ifdef __ANDROID__
+    Common::SetThreadAffinityBigCores();
+#endif
 
     if (filepath.empty()) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");
@@ -928,24 +931,27 @@ void Java_org_citra_citra_1emu_NativeLibrary_reloadSettings([[maybe_unused]] JNI
 }
 
 jdoubleArray Java_org_citra_citra_1emu_NativeLibrary_getPerfStats(JNIEnv* env,
-                                                                  [[maybe_unused]] jobject obj) {
+                                                                   [[maybe_unused]] jobject obj) {
     auto& core = Core::System::GetInstance();
-    jdoubleArray j_stats = env->NewDoubleArray(9);
+
+    static jdoubleArray cached_stats = nullptr;
+    if (!cached_stats) {
+        cached_stats = env->NewDoubleArray(9);
+    }
 
     if (core.IsPoweredOn()) {
         auto results = core.GetAndResetPerfStats();
 
-        // Converting the structure into an array makes it easier to pass it to the frontend
         double stats[9] = {results.system_fps,      results.game_fps,
                            results.emulation_speed, results.time_vblank_interval,
                            results.time_hle_svc,    results.time_hle_ipc,
                            results.time_gpu,        results.time_swap,
                            results.time_remaining};
 
-        env->SetDoubleArrayRegion(j_stats, 0, 9, stats);
+        env->SetDoubleArrayRegion(cached_stats, 0, 9, stats);
     }
 
-    return j_stats;
+    return cached_stats;
 }
 
 void Java_org_citra_citra_1emu_NativeLibrary_run__Ljava_lang_String_2(JNIEnv* env,

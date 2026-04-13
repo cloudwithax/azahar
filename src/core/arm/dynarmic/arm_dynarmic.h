@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include <map>
 #include <memory>
+#include <unordered_map>
 #include <dynarmic/interface/A32/a32.h>
 #include "common/common_types.h"
 #include "core/arm/arm_interface.h"
@@ -74,7 +74,7 @@ private:
 
     Dynarmic::A32::Jit* jit = nullptr;
     std::shared_ptr<Memory::PageTable> current_page_table = nullptr;
-    std::map<std::shared_ptr<Memory::PageTable>, std::unique_ptr<Dynarmic::A32::Jit>> jits;
+    std::unordered_map<std::shared_ptr<Memory::PageTable>, std::unique_ptr<Dynarmic::A32::Jit>> jits;
 };
 
 } // namespace Core
