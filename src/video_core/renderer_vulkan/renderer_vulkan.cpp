@@ -235,10 +235,8 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
     });
 }
 
-void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
-                                    bool flipped) {
-    Frame* frame = window.GetRenderFrame();
-
+void RendererVulkan::RenderToFrame(PresentWindow& window, Frame* frame,
+                                   const Layout::FramebufferLayout& layout, bool flipped) {
     if (layout.width != frame->width || layout.height != frame->height) {
         window.WaitPresent();
         scheduler.Finish();
@@ -254,6 +252,12 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
     scheduler.Flush(frame->render_ready);
 
     window.Present(frame);
+}
+
+void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
+                                    bool flipped) {
+    Frame* frame = window.GetRenderFrame();
+    RenderToFrame(window, frame, layout, flipped);
 }
 
 bool RendererVulkan::TryRenderToWindow(PresentWindow& window,
@@ -262,35 +266,29 @@ bool RendererVulkan::TryRenderToWindow(PresentWindow& window,
     if (!frame) {
         return false;
     }
-
-    if (layout.width != frame->width || layout.height != frame->height) {
-        window.WaitPresent();
-        scheduler.Finish();
-        window.RecreateFrame(frame, layout.width, layout.height);
-    }
-
-    clear_color.float32[0] = Settings::values.bg_red.GetValue();
-    clear_color.float32[1] = Settings::values.bg_green.GetValue();
-    clear_color.float32[2] = Settings::values.bg_blue.GetValue();
-    clear_color.float32[3] = 1.0f;
-
-    DrawScreens(frame, layout, flipped);
-    scheduler.Flush(frame->render_ready);
-
-    window.Present(frame);
+    RenderToFrame(window, frame, layout, flipped);
     return true;
+}
+
+void RendererVulkan::FinalizeFrame() {
+    system.perf_stats->EndSwap();
+    rasterizer.TickFrame();
+    EndFrame();
 }
 
 bool RendererVulkan::TrySwapBuffers() {
     system.perf_stats->StartSwap();
     const Layout::FramebufferLayout& layout = render_window.GetFramebufferLayout();
-    PrepareRendertarget();
-
-    if (!TryRenderToWindow(main_present_window, layout, false)) {
-        // GPU is busy — skip this frame's presentation entirely.
-        system.perf_stats->EndSwap();
+    Frame* frame = main_present_window.TryGetRenderFrame();
+    if (!frame) {
+        // GPU is busy — skip presentation work, but still advance frame
+        // bookkeeping so cache GC and periodic worker draining keep up.
+        FinalizeFrame();
         return false;
     }
+
+    PrepareRendertarget();
+    RenderToFrame(main_present_window, frame, layout, false);
 
     RenderScreenshot();
 
@@ -319,9 +317,7 @@ bool RendererVulkan::TrySwapBuffers() {
     }
 #endif
 
-    system.perf_stats->EndSwap();
-    rasterizer.TickFrame();
-    EndFrame();
+    FinalizeFrame();
     return true;
 }
 
@@ -1209,9 +1205,7 @@ void RendererVulkan::SwapBuffers() {
     }
 #endif
 
-    system.perf_stats->EndSwap();
-    rasterizer.TickFrame();
-    EndFrame();
+    FinalizeFrame();
 }
 
 void RendererVulkan::RenderScreenshot() {

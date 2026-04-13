@@ -380,23 +380,34 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
 
     const bool is_dirty = scheduler.IsStateDirty(StateFlags::Pipeline);
     const bool desc_dirty = scheduler.IsStateDirty(StateFlags::DescriptorSets);
+    const bool offsets_dirty = offsets != current_offsets;
     const bool pipeline_dirty = (current_pipeline != pipeline) || is_dirty;
     const bool dynamic_dirty = !(info.dynamic_info == current_info.dynamic_info);
-    const bool state_dirty = is_dirty || pipeline_dirty || desc_dirty || dynamic_dirty ||
-                             info.state.rasterization.value != current_info.state.rasterization.value ||
-                             info.state.depth_stencil.value != current_info.state.depth_stencil.value;
+    const bool render_state_dirty =
+        is_dirty || pipeline_dirty || dynamic_dirty ||
+        info.state.rasterization.value != current_info.state.rasterization.value ||
+        info.state.depth_stencil.value != current_info.state.depth_stencil.value;
+    const bool descriptor_bind_needed = is_dirty || desc_dirty || offsets_dirty;
 
-    // Fast path: if absolutely nothing changed since last draw, skip recording the
-    // entire state-setting lambda. This saves significant CPU overhead in MK7's
-    // gameplay loop where many consecutive draws share identical pipeline state.
-    if (!state_dirty) {
-        // Still need to update offsets for uniform buffer dynamic offsets
+    // Fast path: if absolutely nothing changed since last draw, skip command
+    // recording entirely. MK7 emits long runs of draws with identical pipeline,
+    // descriptors, and uniform offsets on repeated track geometry.
+    if (!render_state_dirty && !descriptor_bind_needed) {
+        current_info = info;
+        scheduler.MarkStateNonDirty(StateFlags::Pipeline | StateFlags::DescriptorSets);
+        return true;
+    }
+
+    // If only the dynamic uniform offsets changed, rebind the descriptor sets
+    // and avoid re-recording the rest of the pipeline state.
+    if (!render_state_dirty) {
         scheduler.Record([descriptor_sets = bound_descriptor_sets, offsets = offsets,
                           pipeline_layout = *pipeline_layout](vk::CommandBuffer cmdbuf) {
             cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0,
                                       descriptor_sets, offsets);
         });
         current_info = info;
+        current_offsets = offsets;
         scheduler.MarkStateNonDirty(StateFlags::Pipeline | StateFlags::DescriptorSets);
         return true;
     }
@@ -407,7 +418,8 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
                       current_rasterization = current_info.state.rasterization,
                       current_depth_stencil = current_info.state.depth_stencil,
                       rasterization = info.state.rasterization,
-                      depth_stencil = info.state.depth_stencil](vk::CommandBuffer cmdbuf) {
+                      depth_stencil = info.state.depth_stencil,
+                      descriptor_bind_needed](vk::CommandBuffer cmdbuf) {
         if (dynamic.viewport != current_dynamic.viewport || is_dirty) {
             const vk::Viewport vk_viewport = {
                 .x = static_cast<f32>(dynamic.viewport.left),
@@ -511,12 +523,15 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
             // is far better than stalling GPU submission on Mali.
         }
 
-        cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0,
-                                  descriptor_sets, offsets);
+        if (descriptor_bind_needed) {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0,
+                                      descriptor_sets, offsets);
+        }
     });
 
     current_info = info;
     current_pipeline = pipeline;
+    current_offsets = offsets;
     scheduler.MarkStateNonDirty(StateFlags::Pipeline | StateFlags::DescriptorSets);
 
     return true;

@@ -9,6 +9,21 @@ namespace Common::Hacks {
 HackManager hack_manager = {
     .entries = {
 
+        // Mario Kart 7 keeps the top-screen right-eye path busy enough on weak
+        // mobile GPUs that forcing the hack is the difference between playable
+        // and slideshow performance.
+        {HackType::RIGHT_EYE_DISABLE,
+         HackEntry{
+             .mode = HackAllowMode::FORCE,
+             .affected_title_ids =
+                 {
+                     0x0004000000030600, // JPN
+                     0x0004000000030700, // EUR
+                     0x0004000000030800, // USA
+                     0x0004000000030A00, // KOR
+                 },
+         }},
+
         // The following games cannot use the right eye disable hack due to the way they
         // handle rendering.
         {HackType::RIGHT_EYE_DISABLE,
