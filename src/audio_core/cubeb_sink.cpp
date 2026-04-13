@@ -9,6 +9,7 @@
 #include "audio_core/audio_types.h"
 #include "audio_core/cubeb_sink.h"
 #include "common/logging/log.h"
+#include "common/thread.h"
 
 namespace AudioCore {
 
@@ -17,6 +18,7 @@ struct CubebSink::Impl {
     cubeb_stream* stream = nullptr;
 
     std::function<void(s16*, std::size_t)> cb;
+    std::once_flag callback_thread_initialized;
 
     static long DataCallback(cubeb_stream* stream, void* user_data, const void* input_buffer,
                              void* output_buffer, long num_frames);
@@ -68,8 +70,14 @@ CubebSink::CubebSink(std::string_view target_device_name) : impl(std::make_uniqu
         }
     }
 
+    u32 requested_latency = std::max(512u, minimum_latency);
+#ifdef ANDROID
+    // RK3568-class Android devices need more slack than desktop to survive scheduler jitter.
+    requested_latency = std::max(requested_latency, 2048u);
+#endif
+
     auto stream_err = cubeb_stream_init(impl->ctx, &impl->stream, "AzaharAudio", nullptr, nullptr,
-                                        output_device, &params, std::max(512u, minimum_latency),
+                                        output_device, &params, requested_latency,
                                         &Impl::DataCallback, &Impl::StateCallback, impl.get());
     if (stream_err != CUBEB_OK) {
         switch (stream_err) {
@@ -123,6 +131,10 @@ long CubebSink::Impl::DataCallback(cubeb_stream* stream, void* user_data, const 
         LOG_DEBUG(Audio_Sink, "Missing internal data and/or audio callback, emitting zeroes.");
         std::memset(output_buffer, 0, num_frames * 2 * sizeof(s16));
     } else {
+        std::call_once(impl->callback_thread_initialized, [] {
+            Common::SetCurrentThreadName("AudioOut");
+            Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+        });
         impl->cb(buffer, num_frames);
     }
 

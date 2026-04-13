@@ -82,9 +82,10 @@ void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
 
     std::size_t frames_written = 0;
     if (performing_time_stretching) {
-        const std::vector<s16> in{fifo.Pop()};
-        const std::size_t num_in{in.size() / 2};
-        frames_written = time_stretcher.Process(in.data(), num_in, buffer, num_frames);
+        const std::size_t num_in =
+            fifo.Pop(stretch_input_buffer.data(), stretch_fifo_capacity);
+        frames_written = time_stretcher.Process(stretch_input_buffer.data(), num_in, buffer,
+                                                num_frames);
     } else {
         if (flushing_time_stretcher) {
             time_stretcher.Flush();

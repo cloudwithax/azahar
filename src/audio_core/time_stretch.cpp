@@ -33,6 +33,9 @@ void TimeStretcher::SetOutputSampleRate(unsigned int sample_rate) {
 
 std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
                                    std::size_t num_out) {
+    thread_local std::vector<soundtouch::SAMPLETYPE> scratch_in;
+    thread_local std::vector<soundtouch::SAMPLETYPE> scratch_out;
+
     const double time_delta = static_cast<double>(num_out) / native_sample_rate; // seconds
     double current_ratio = static_cast<double>(num_in) / static_cast<double>(num_out);
 
@@ -66,27 +69,31 @@ std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
               backlog_fullness);
 
     if constexpr (std::is_floating_point<soundtouch::SAMPLETYPE>()) {
-        // The SoundTouch library on most systems expects float samples
-        // use this vector to store input if soundtouch::SAMPLETYPE is a float
-        std::vector<soundtouch::SAMPLETYPE> float_in(2 * num_in);
-        std::vector<soundtouch::SAMPLETYPE> float_out(2 * num_out);
+        // Avoid heap churn on the audio callback thread by reusing scratch buffers.
+        if (scratch_in.size() < 2 * num_in) {
+            scratch_in.resize(2 * num_in);
+        }
+        if (scratch_out.size() < 2 * num_out) {
+            scratch_out.resize(2 * num_out);
+        }
 
         for (std::size_t i = 0; i < (2 * num_in); i++) {
             // Conventional integer PCM uses a range of -32768 to 32767,
             // but float samples use -1 to 1
             // As a result we need to scale sample values during conversion
             const float temp = static_cast<float>(in[i]) / std::numeric_limits<s16>::max();
-            float_in[i] = static_cast<soundtouch::SAMPLETYPE>(temp);
+            scratch_in[i] = static_cast<soundtouch::SAMPLETYPE>(temp);
         }
 
-        sound_touch->putSamples(float_in.data(), static_cast<u32>(num_in));
+        sound_touch->putSamples(scratch_in.data(), static_cast<u32>(num_in));
 
         const std::size_t samples_received =
-            sound_touch->receiveSamples(float_out.data(), static_cast<u32>(num_out));
+            sound_touch->receiveSamples(scratch_out.data(), static_cast<u32>(num_out));
 
         // Converting output samples back to shorts so we can use them
-        for (std::size_t i = 0; i < (2 * num_out); i++) {
-            const s16 temp = static_cast<s16>(float_out[i] * std::numeric_limits<s16>::max());
+        for (std::size_t i = 0; i < (2 * samples_received); i++) {
+            const s16 temp =
+                static_cast<s16>(scratch_out[i] * std::numeric_limits<s16>::max());
             out[i] = temp;
         }
 
