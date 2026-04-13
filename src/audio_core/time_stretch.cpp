@@ -56,8 +56,13 @@ std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
 
     // This low-pass filter smoothes out variance in the calculated stretch ratio.
     // The time-scale determines how responsive this filter is.
+    // Cache the gain to avoid std::exp() on every callback (~200/sec on Cortex-A55).
     constexpr double lpf_time_scale = 0.712; // seconds
-    const double lpf_gain = 1.0 - std::exp(-time_delta / lpf_time_scale);
+    if (num_out != cached_num_out) [[unlikely]] {
+        cached_num_out = num_out;
+        cached_lpf_gain = 1.0 - std::exp(-time_delta / lpf_time_scale);
+    }
+    const double lpf_gain = cached_lpf_gain;
     stretch_ratio += lpf_gain * (current_ratio - stretch_ratio);
 
     // Place a lower limit of 5% speed. When a game boots up, there will be

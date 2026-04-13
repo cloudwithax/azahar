@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <thread>
 #include "common/microprofile.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -262,24 +263,17 @@ Frame* PresentWindow::GetRenderFrame() {
     vk::Device device = instance.GetDevice();
     vk::Result result{};
 
-    const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, std::numeric_limits<u64>::max());
-        return result;
-    };
-
-    // Wait for the presentation to be finished so all frame resources are free
-    while (wait() != vk::Result::eSuccess) {
-        // Retry if the waiting times out
-        if (result == vk::Result::eTimeout) {
-            continue;
+    // Wait for the presentation to be finished so all frame resources are free.
+    // Use shorter timeouts with yielding to avoid burning a CPU core on Mali's
+    // ppoll() signal bug (eErrorInitializationFailed requires manual retry).
+    for (;;) {
+        // 2ms timeout — long enough to avoid busy-spinning, short enough for frame pacing
+        result = device.waitForFences(frame->present_done, false, 2'000'000);
+        if (result == vk::Result::eSuccess) {
+            break;
         }
-
-        // eErrorInitializationFailed occurs on Mali GPU drivers due to them
-        // using the ppoll() syscall which isn't correctly restarted after a signal,
-        // we need to manually retry waiting in that case
-        if (result == vk::Result::eErrorInitializationFailed) {
-            continue;
-        }
+        // eTimeout or eErrorInitializationFailed (Mali ppoll bug): yield and retry
+        std::this_thread::yield();
     }
 
     device.resetFences(frame->present_done);
@@ -465,8 +459,8 @@ void PresentWindow::CopyToSwapchain(Frame* frame) {
                          MakeImageCopy(frame->width, frame->height, extent.width, extent.height));
     }
 
-    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                           vk::PipelineStageFlagBits::eAllCommands,
+    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                           vk::PipelineStageFlagBits::eBottomOfPipe,
                            vk::DependencyFlagBits::eByRegion, {}, {}, post_barrier);
 
     cmdbuf.end();

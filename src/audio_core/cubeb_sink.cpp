@@ -72,8 +72,10 @@ CubebSink::CubebSink(std::string_view target_device_name) : impl(std::make_uniqu
 
     u32 requested_latency = std::max(512u, minimum_latency);
 #ifdef ANDROID
-    // RK3568-class Android devices need more slack than desktop to survive scheduler jitter.
-    requested_latency = std::max(requested_latency, 2048u);
+    // RK3568-class Android devices need large buffers to survive scheduler jitter, GC pauses,
+    // and Mali GPU driver stalls. 4096 frames at 32728 Hz = ~125ms, which absorbs typical
+    // Android scheduler hiccups without perceptible latency for a 3DS game.
+    requested_latency = std::max(requested_latency, 4096u);
 #endif
 
     auto stream_err = cubeb_stream_init(impl->ctx, &impl->stream, "AzaharAudio", nullptr, nullptr,

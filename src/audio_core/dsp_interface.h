@@ -115,9 +115,12 @@ private:
 
     Core::System& system;
 
-    std::atomic<bool> enable_time_stretching = false;
-    std::atomic<bool> performing_time_stretching = false;
-    std::atomic<bool> flushing_time_stretcher = false;
+    // Relaxed atomics: these flags are only set from the emulation thread and read from the
+    // audio callback thread. No ordering with other variables is required — eventual visibility
+    // is sufficient. This avoids dmb ish barriers on ARM that add ~5ns per load/store.
+    std::atomic<bool> enable_time_stretching{false};
+    std::atomic<bool> performing_time_stretching{false};
+    std::atomic<bool> flushing_time_stretcher{false};
     Common::RingBuffer<s16, stretch_fifo_capacity, 2> fifo;
     std::array<s16, stretch_fifo_capacity * 2> stretch_input_buffer{};
     std::array<s16, 2> last_frame{};

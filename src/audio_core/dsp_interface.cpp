@@ -72,25 +72,26 @@ void DspInterface::OutputSample(std::array<s16, 2> sample) {
 
 void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
     // Determine if we should stretch based on the current emulation speed.
+    // Use relaxed ordering — these flags only need eventual visibility, not ordering guarantees.
     const auto perf_stats = system.GetLastPerfStats();
-    const auto should_stretch = enable_time_stretching && perf_stats.emulation_speed <= 95;
-    if (performing_time_stretching && !should_stretch) {
-        // If we just stopped stretching, flush the stretcher before returning to normal output.
-        flushing_time_stretcher = true;
+    const auto should_stretch =
+        enable_time_stretching.load(std::memory_order_relaxed) && perf_stats.emulation_speed <= 95;
+    if (performing_time_stretching.load(std::memory_order_relaxed) && !should_stretch) {
+        flushing_time_stretcher.store(true, std::memory_order_relaxed);
     }
-    performing_time_stretching = should_stretch;
+    performing_time_stretching.store(should_stretch, std::memory_order_relaxed);
 
     std::size_t frames_written = 0;
-    if (performing_time_stretching) {
+    if (performing_time_stretching.load(std::memory_order_relaxed)) {
         const std::size_t num_in =
             fifo.Pop(stretch_input_buffer.data(), stretch_fifo_capacity);
         frames_written = time_stretcher.Process(stretch_input_buffer.data(), num_in, buffer,
                                                 num_frames);
     } else {
-        if (flushing_time_stretcher) {
+        if (flushing_time_stretcher.load(std::memory_order_relaxed)) {
             time_stretcher.Flush();
             frames_written = time_stretcher.Process(nullptr, 0, buffer, num_frames);
-            flushing_time_stretcher = false;
+            flushing_time_stretcher.store(false, std::memory_order_relaxed);
 
             // Make sure any frames that did not fit are cleared from the time stretcher,
             // so that they do not bleed into the next time the stretcher is enabled.
