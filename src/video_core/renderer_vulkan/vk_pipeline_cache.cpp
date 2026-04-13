@@ -379,7 +379,28 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     }
 
     const bool is_dirty = scheduler.IsStateDirty(StateFlags::Pipeline);
+    const bool desc_dirty = scheduler.IsStateDirty(StateFlags::DescriptorSets);
     const bool pipeline_dirty = (current_pipeline != pipeline) || is_dirty;
+    const bool dynamic_dirty = !(info.dynamic_info == current_info.dynamic_info);
+    const bool state_dirty = is_dirty || pipeline_dirty || desc_dirty || dynamic_dirty ||
+                             info.state.rasterization.value != current_info.state.rasterization.value ||
+                             info.state.depth_stencil.value != current_info.state.depth_stencil.value;
+
+    // Fast path: if absolutely nothing changed since last draw, skip recording the
+    // entire state-setting lambda. This saves significant CPU overhead in MK7's
+    // gameplay loop where many consecutive draws share identical pipeline state.
+    if (!state_dirty) {
+        // Still need to update offsets for uniform buffer dynamic offsets
+        scheduler.Record([descriptor_sets = bound_descriptor_sets, offsets = offsets,
+                          pipeline_layout = *pipeline_layout](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0,
+                                      descriptor_sets, offsets);
+        });
+        current_info = info;
+        scheduler.MarkStateNonDirty(StateFlags::Pipeline | StateFlags::DescriptorSets);
+        return true;
+    }
+
     scheduler.Record([this, is_dirty, pipeline_dirty, pipeline,
                       current_dynamic = current_info.dynamic_info, dynamic = info.dynamic_info,
                       descriptor_sets = bound_descriptor_sets, offsets = offsets,
@@ -482,10 +503,12 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
         }
 
         if (pipeline_dirty) {
-            if (!pipeline->IsDone()) {
-                pipeline->WaitDone();
+            if (pipeline->IsDone()) {
+                cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
             }
-            cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+            // If pipeline isn't done, reuse the previously bound pipeline rather than
+            // blocking the command buffer worker. Slightly wrong visuals for 1-2 frames
+            // is far better than stalling GPU submission on Mali.
         }
 
         cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0,
