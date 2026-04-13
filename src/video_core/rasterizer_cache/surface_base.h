@@ -65,11 +65,17 @@ public:
     }
 
     void MarkValid(SurfaceInterval interval) {
+        if (IsRegionValid(interval)) {
+            return;
+        }
         invalid_regions.erase(interval);
         modification_tick++;
     }
 
     void MarkInvalid(SurfaceInterval interval) {
+        if (boost::icl::contains(invalid_regions, interval)) {
+            return;
+        }
         invalid_regions.insert(interval);
         modification_tick++;
     }
