@@ -11,9 +11,10 @@
 
 namespace Vulkan {
 
-// Lower threshold for tiler GPUs (Mali/Adreno/PowerVR) to reduce tile buffer pressure.
-// Desktop GPUs can tolerate more draws between flushes.
-constexpr u32 MinDrawsToFlush = 10;
+// Flush threshold for tiler GPUs (Mali/Adreno/PowerVR). Too low wastes time on
+// vkQueueSubmit overhead; too high risks tile buffer pressure. 30 draws balances
+// submit frequency against tile utilization on Mali G52.
+constexpr u32 MinDrawsToFlush = 30;
 
 using VideoCore::PixelFormat;
 using VideoCore::SurfaceType;
@@ -96,10 +97,13 @@ void RenderManager::EndRendering() {
                                   vk::PipelineStageFlagBits::eLateFragmentTests;
                 src_access_flags = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
             }
+            // Transition from optimal attachment layout to eGeneral for subsequent
+            // shader reads / transfer operations. The render pass finalLayout handles
+            // the attachment→general transition, so the barrier only needs to
+            // establish the access dependency with a narrow dst scope.
             barriers[num_barriers++] = vk::ImageMemoryBarrier{
                 .srcAccessMask = src_access_flags,
-                .dstAccessMask =
-                    vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead,
+                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
                 .oldLayout = vk::ImageLayout::eGeneral,
                 .newLayout = vk::ImageLayout::eGeneral,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -119,8 +123,7 @@ void RenderManager::EndRendering() {
             return;
         }
         cmdbuf.pipelineBarrier(pipeline_flags,
-                               vk::PipelineStageFlagBits::eFragmentShader |
-                                   vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eFragmentShader,
                                vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr,
                                num_barriers, barriers.data());
     });
@@ -182,13 +185,18 @@ vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Forma
             .storeOp = vk::AttachmentStoreOp::eStore,
             .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
             .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+            // Use eGeneral for initial/final so the rest of the codebase can
+            // reference images in eGeneral without extra transitions, but use
+            // eColorAttachmentOptimal during the subpass. On tile-based GPUs
+            // (Mali) the driver uses the subpass layout to keep data in tile
+            // memory, which is the critical bandwidth optimization.
             .initialLayout = vk::ImageLayout::eGeneral,
             .finalLayout = vk::ImageLayout::eGeneral,
         };
 
         color_attachment_ref = vk::AttachmentReference{
             .attachment = attachment_count++,
-            .layout = vk::ImageLayout::eGeneral,
+            .layout = vk::ImageLayout::eColorAttachmentOptimal,
         };
 
         use_color = true;
@@ -207,7 +215,7 @@ vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Forma
 
         depth_attachment_ref = vk::AttachmentReference{
             .attachment = attachment_count++,
-            .layout = vk::ImageLayout::eGeneral,
+            .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
         };
 
         use_depth = true;

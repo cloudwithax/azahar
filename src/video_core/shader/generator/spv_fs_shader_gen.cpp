@@ -349,19 +349,22 @@ void FragmentModule::WriteLighting() {
 
     // Samples the specified lookup table for specular lighting
     const Id view{OpLoad(vec_ids.Get(3), view_id)};
+    // Pre-normalized half_vector and view, set per light iteration to avoid
+    // redundant OpNormalize calls in each LUT lookup.
+    Id norm_half{};
+    Id norm_view{};
     const auto get_lut_value = [&](LightingRegs::LightingSampler sampler, u32 light_num,
                                    LightingRegs::LightingLutInput input, bool abs) -> Id {
         Id index{};
         switch (input) {
         case LightingRegs::LightingLutInput::NH:
-            index = OpDot(f32_id, normal, OpNormalize(vec_ids.Get(3), half_vector));
+            index = OpDot(f32_id, normal, norm_half);
             break;
         case LightingRegs::LightingLutInput::VH:
-            index = OpDot(f32_id, OpNormalize(vec_ids.Get(3), view),
-                          OpNormalize(vec_ids.Get(3), half_vector));
+            index = OpDot(f32_id, norm_view, norm_half);
             break;
         case LightingRegs::LightingLutInput::NV:
-            index = OpDot(f32_id, normal, OpNormalize(vec_ids.Get(3), view));
+            index = OpDot(f32_id, normal, norm_view);
             break;
         case LightingRegs::LightingLutInput::LN:
             index = OpDot(f32_id, light_vector, normal);
@@ -375,12 +378,11 @@ void FragmentModule::WriteLighting() {
                 // Note: even if the normal vector is modified by normal map, which is not the
                 // normal of the tangent plane anymore, the half angle vector is still projected
                 // using the modified normal vector.
-                const Id normalized_half_vector{OpNormalize(vec_ids.Get(3), half_vector)};
-                const Id normal_dot_half_vector{OpDot(f32_id, normal, normalized_half_vector)};
+                const Id normal_dot_half_vector{OpDot(f32_id, normal, norm_half)};
                 const Id normal_mul_dot{
                     OpVectorTimesScalar(vec_ids.Get(3), normal, normal_dot_half_vector)};
                 const Id half_angle_proj{
-                    OpFSub(vec_ids.Get(3), normalized_half_vector, normal_mul_dot)};
+                    OpFSub(vec_ids.Get(3), norm_half, normal_mul_dot)};
 
                 // Note: the half angle vector projection is confirmed not normalized before the dot
                 // product. The result is in fact not cos(phi) as the name suggested.
@@ -433,6 +435,11 @@ void FragmentModule::WriteLighting() {
 
         spot_dir = GetLightMember(5);
         half_vector = OpFAdd(vec_ids.Get(3), OpNormalize(vec_ids.Get(3), view), light_vector);
+
+        // Pre-normalize half_vector and view once per light to avoid redundant
+        // OpNormalize calls in each LUT lookup (saves multiple rsqrt ops per fragment).
+        norm_half = OpNormalize(vec_ids.Get(3), half_vector);
+        norm_view = OpNormalize(vec_ids.Get(3), view);
 
         // Compute dot product of light_vector and normal, adjust if lighting is one-sided or
         // two-sided
@@ -677,13 +684,19 @@ void FragmentModule::WriteTevStage(s32 index) {
         combiner_output = OpCompositeConstruct(vec_ids.Get(4), color_output, alpha_output);
     }
 
-    combiner_buffer = next_combiner_buffer;
-    if (config.TevStageUpdatesCombinerBufferColor(index)) {
+    // Only swap combiner buffers when this stage meaningfully interacts with it.
+    // Passthrough stages that don't update the combiner buffer can skip entirely.
+    const bool updates_color = config.TevStageUpdatesCombinerBufferColor(index);
+    const bool updates_alpha = config.TevStageUpdatesCombinerBufferAlpha(index);
+    if (updates_color || updates_alpha || !is_passthrough_tev_stage(stage)) {
+        combiner_buffer = next_combiner_buffer;
+    }
+    if (updates_color) {
         next_combiner_buffer =
             OpVectorShuffle(vec_ids.Get(4), combiner_output, next_combiner_buffer, 0, 1, 2, 7);
     }
 
-    if (config.TevStageUpdatesCombinerBufferAlpha(index)) {
+    if (updates_alpha) {
         next_combiner_buffer =
             OpVectorShuffle(vec_ids.Get(4), next_combiner_buffer, combiner_output, 0, 1, 2, 7);
     }

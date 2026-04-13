@@ -148,6 +148,12 @@ private:
     bool async_shaders{false};
     u32 frames_since_worker_wait{};
     s64 gpu_queue_time = 0;
+
+    /// Texture unit dirty tracking: hash of PICA texture register state from the previous
+    /// draw call. When the hash matches, we can reuse the existing texture descriptor set
+    /// instead of allocating a new one and writing 3 image sampler descriptors.
+    u64 prev_texture_config_hash{};
+    bool texture_descriptors_valid{false};
 };
 
 } // namespace Vulkan

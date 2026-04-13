@@ -84,7 +84,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              RenderManager& renderpass_cache_, DescriptorUpdateQueue& update_queue_)
     : instance{instance_}, scheduler{scheduler_}, renderpass_cache{renderpass_cache_},
       update_queue{update_queue_},
-      num_worker_threads{std::thread::hardware_concurrency() <= 4
+      num_worker_threads{std::thread::hardware_concurrency() <= 2
                              ? 1U
                              : std::thread::hardware_concurrency() / 2},
       pipeline_workers{num_worker_threads, "Pipeline workers", {},
