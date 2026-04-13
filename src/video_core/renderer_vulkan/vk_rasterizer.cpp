@@ -141,39 +141,20 @@ RasterizerVulkan::~RasterizerVulkan() = default;
 
 void RasterizerVulkan::TickFrame() {
 #ifdef ANDROID
-    // On low-core ARM devices (RK3568 etc.), WaitWorker() is a full CPU-GPU sync that stalls
-    // the emulation thread. With async presentation, only sync every 16 frames to let the GPU
-    // pipeline stay full. The present thread handles frame pacing independently.
-    if (!Settings::values.async_presentation.GetValue() || ++frames_since_worker_wait >= 16) {
+    // On Android with async presentation the present thread handles GPU pacing.
+    // The emulation thread should never sleep waiting for the GPU — that directly
+    // translates to lost game speed on slow GPUs (RK3568 Mali). Only sync every
+    // 32 frames to reclaim finished command buffers and avoid resource exhaustion.
+    if (++frames_since_worker_wait >= 32) {
         scheduler.WaitWorker(0);
         frames_since_worker_wait = 0;
     }
 #else
     scheduler.WaitWorker(0);
 #endif
-
-    // Adaptive WaitWorker interval based on GPU load
-    if (Settings::values.async_presentation.GetValue()) {
-        const s64 gpu_queue_time = this->gpu_queue_time;
-        if (gpu_queue_time > 0) {
-            constexpr s64 HIGH_GPU_LOAD = 8'000'000;
-            constexpr s64 MAX_GPU_LOAD = 20'000'000;
-            constexpr u32 MAX_INTERVAL = 32;
-
-            if (gpu_queue_time > HIGH_GPU_LOAD) {
-                u32 adaptive_interval = 8;
-                if (gpu_queue_time > MAX_GPU_LOAD) {
-                    adaptive_interval = std::min<u32>(32, 16 + (gpu_queue_time - MAX_GPU_LOAD) / 1'000'000);
-                }
-                scheduler.WaitWorker(adaptive_interval);
-            } else {
-                scheduler.WaitWorker(0);
-            }
-        } else {
-            scheduler.WaitWorker(0);
-        }
-    }
     res_cache.TickFrame();
+    // Invalidate texture descriptor cache — descriptor sets may be recycled after frame boundary
+    texture_descriptors_valid = false;
 }
 
 void RasterizerVulkan::LoadDefaultDiskResources(
@@ -495,8 +476,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         SetupIndexArray();
     }
 
-    const bool wait_built = !async_shaders || regs.pipeline.num_vertices <= 6;
-    if (!pipeline_cache.BindPipeline(pipeline_info, wait_built)) {
+    // Never force synchronous compilation — always allow async shader builds.
+    // The old check (num_vertices <= 6 → sync) caused main-thread stalls on
+    // small draws like UI overlays, minimap, and item icons in MK7 course
+    // previews, which rapidly hit many new shader variants. Dropping the frame
+    // for one draw is better than freezing for 50-200ms of shader compilation.
+    if (!pipeline_cache.BindPipeline(pipeline_info, !async_shaders)) {
         return true;
     }
 
@@ -603,8 +588,43 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         fs_data_dirty = true;
     }
 
-    // Sync and bind the texture surfaces
-    SyncTextureUnits(framebuffer);
+    // Compute a hash of the PICA texture register state to skip redundant descriptor
+    // set allocation and writes. MK7 races draw many consecutive primitives with
+    // identical textures (kart body parts, repeated track segments).
+    const auto& tex = regs.texturing;
+    const u32 color_fb_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
+    u64 tex_hash = 0xcbf29ce484222325ULL; // FNV-1a offset basis
+    constexpr u64 fnv_prime = 0x100000001b3ULL;
+    const auto hash_u32 = [&](u32 val) {
+        tex_hash ^= val;
+        tex_hash *= fnv_prime;
+    };
+    hash_u32(tex.main_config.texture0_enable | (tex.main_config.texture1_enable << 1) |
+             (tex.main_config.texture2_enable << 2));
+    // Hash texture0 config: address, dimensions, wrap/filter/type, lod, border
+    hash_u32(tex.texture0.address);
+    hash_u32(tex.texture0.border_color.raw);
+    hash_u32(*reinterpret_cast<const u32*>(&tex.texture0.height));
+    hash_u32(*reinterpret_cast<const u32*>(&tex.texture0.mag_filter));
+    hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture0_format)));
+    // Hash texture1 config
+    hash_u32(tex.texture1.address);
+    hash_u32(*reinterpret_cast<const u32*>(&tex.texture1.height));
+    hash_u32(*reinterpret_cast<const u32*>(&tex.texture1.mag_filter));
+    hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture1_format)));
+    // Hash texture2 config
+    hash_u32(tex.texture2.address);
+    hash_u32(*reinterpret_cast<const u32*>(&tex.texture2.height));
+    hash_u32(*reinterpret_cast<const u32*>(&tex.texture2.mag_filter));
+    hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture2_format)));
+    // Include color FB address to detect feedback loop changes
+    hash_u32(color_fb_addr);
+
+    if (tex_hash != prev_texture_config_hash || !texture_descriptors_valid) {
+        prev_texture_config_hash = tex_hash;
+        texture_descriptors_valid = true;
+        SyncTextureUnits(framebuffer);
+    }
     SyncUtilityTextures(framebuffer);
 
     // Sync and bind the shader
@@ -772,6 +792,7 @@ void RasterizerVulkan::FlushRegion(PAddr addr, u32 size) {
 
 void RasterizerVulkan::InvalidateRegion(PAddr addr, u32 size) {
     res_cache.InvalidateRegion(addr, size);
+    texture_descriptors_valid = false;
 }
 
 void RasterizerVulkan::FlushAndInvalidateRegion(PAddr addr, u32 size) {

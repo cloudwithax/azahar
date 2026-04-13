@@ -12,7 +12,11 @@ using ProcTexCombiner = TexturingRegs::ProcTexCombiner;
 using ProcTexFilter = TexturingRegs::ProcTexFilter;
 using TextureType = Pica::TexturingRegs::TextureConfig::TextureType;
 
-constexpr static std::size_t RESERVE_SIZE = 8 * 1024 * 1024;
+// 3DS fragment shaders are small (TEV combiners + lighting). 512 KB is more
+// than enough and avoids the 8 MB per-compilation allocation spike that
+// hammers memory during shader storms (e.g. MK7 course preview flyovers
+// which compile dozens of unique shaders in rapid succession).
+constexpr static std::size_t RESERVE_SIZE = 512 * 1024;
 
 enum class Semantic : u32 {
     Position,
@@ -473,11 +477,19 @@ void FragmentModule::WriteTevStage(u32 index) {
                            index, stage.GetColorMultiplier(), index, stage.GetAlphaMultiplier());
     }
 
-    out += "combiner_buffer = next_combiner_buffer;\n";
-    if (config.TevStageUpdatesCombinerBufferColor(index)) {
+    // Only emit combiner buffer swap when this stage or a later stage actually
+    // reads/writes the combiner buffer. Passthrough stages that don't update
+    // the buffer can skip the assignment entirely, reducing shader code size
+    // and register pressure on Mali (where every vec4 assignment costs ALU).
+    const bool updates_color = config.TevStageUpdatesCombinerBufferColor(index);
+    const bool updates_alpha = config.TevStageUpdatesCombinerBufferAlpha(index);
+    if (updates_color || updates_alpha || !IsPassThroughTevStage(stage)) {
+        out += "combiner_buffer = next_combiner_buffer;\n";
+    }
+    if (updates_color) {
         out += "next_combiner_buffer.rgb = combiner_output.rgb;\n";
     }
-    if (config.TevStageUpdatesCombinerBufferAlpha(index)) {
+    if (updates_alpha) {
         out += "next_combiner_buffer.a = combiner_output.a;\n";
     }
 }
@@ -581,13 +593,13 @@ void FragmentModule::WriteLighting() {
         std::string index;
         switch (input) {
         case LightingRegs::LightingLutInput::NH:
-            index = "dot(normal, normalize(half_vector))";
+            index = "dot(normal, norm_half)";
             break;
         case LightingRegs::LightingLutInput::VH:
-            index = "dot(normalize(view), normalize(half_vector))";
+            index = "dot(norm_view, norm_half)";
             break;
         case LightingRegs::LightingLutInput::NV:
-            index = "dot(normal, normalize(view))";
+            index = "dot(normal, norm_view)";
             break;
         case LightingRegs::LightingLutInput::LN:
             index = "dot(light_vector, normal)";
@@ -602,7 +614,7 @@ void FragmentModule::WriteLighting() {
                 // normal of the tangent plane anymore, the half angle vector is still projected
                 // using the modified normal vector.
                 constexpr std::string_view half_angle_proj =
-                    "normalize(half_vector) - normal * dot(normal, normalize(half_vector))";
+                    "norm_half - normal * dot(normal, norm_half)";
                 // Note: the half angle vector projection is confirmed not normalized before the dot
                 // product. The result is in fact not cos(phi) as the name suggested.
                 index = fmt::format("dot({}, tangent)", half_angle_proj);
@@ -647,6 +659,11 @@ void FragmentModule::WriteLighting() {
 
         out += fmt::format("spot_dir = {}.spot_direction;\n", light_src);
         out += "half_vector = normalize(view) + light_vector;\n";
+
+        // Pre-normalize half_vector and view once per light to avoid redundant
+        // normalize() calls in each LUT lookup (saves multiple rsqrt ops per fragment).
+        out += "vec3 norm_half = normalize(half_vector);\n"
+               "vec3 norm_view = normalize(view);\n";
 
         // Compute dot product of light_vector and normal, adjust if lighting is one-sided or
         // two-sided
@@ -857,14 +874,21 @@ imageStore(shadow_buffer, image_coord, uvec4(new_shadow));
 endInvocationInterlock();
 )";
     } else {
+        // On TBDR GPUs (Mali) without fragment shader interlock, the atomic CAS loop
+        // is extremely expensive due to tile serialization. Pre-check depth before
+        // entering the atomic loop — most shadow fragments fail this test, so we
+        // skip the costly atomic entirely for the majority of fragments.
         out += R"(
 uint old = imageLoad(shadow_buffer, image_coord).x;
-uint new1;
-uint old2;
-do {
-    old2 = old;
-    new1 = UpdateShadow(old, d, s);
-} while ((old = imageAtomicCompSwap(shadow_buffer, image_coord, old, new1)) != old2);
+uvec2 pre_ref = DecodeShadow(old);
+if (d < pre_ref.x) {
+    uint new1;
+    uint old2;
+    do {
+        old2 = old;
+        new1 = UpdateShadow(old, d, s);
+    } while ((old = imageAtomicCompSwap(shadow_buffer, image_coord, old, new1)) != old2);
+}
 )";
     }
 }

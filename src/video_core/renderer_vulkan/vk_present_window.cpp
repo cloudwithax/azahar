@@ -385,13 +385,18 @@ void PresentWindow::PresentThread(std::stop_token token) {
         free_queue.push(frame);
         free_cv.notify_one();
 
-        // Adaptive frame pacing: if GPU queue is building up, slow down present thread
-        constexpr s64 HIGH_GPU_LOAD_THRESHOLD = 8'000'000;
-        constexpr s64 MAX_GPU_LOAD_THRESHOLD = 20'000'000;
-        if (gpu_queue_time > HIGH_GPU_LOAD_THRESHOLD) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        } else if (gpu_queue_time > MAX_GPU_LOAD_THRESHOLD) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // Adaptive frame pacing: if GPU queue is building up, yield to let
+        // the GPU drain. Use the locally measured queue_time, not the member
+        // variable (which tracks a different value). The previous code had a
+        // logic bug: the HIGH threshold was checked before MAX in an else-if,
+        // so the MAX branch was unreachable.
+        const s64 local_queue_us = queue_time.count();
+        constexpr s64 HIGH_GPU_LOAD_THRESHOLD = 12'000'000; // 12ms
+        constexpr s64 MAX_GPU_LOAD_THRESHOLD = 20'000'000;  // 20ms
+        if (local_queue_us > MAX_GPU_LOAD_THRESHOLD) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        } else if (local_queue_us > HIGH_GPU_LOAD_THRESHOLD) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 }

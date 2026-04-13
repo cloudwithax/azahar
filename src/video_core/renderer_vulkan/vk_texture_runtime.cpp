@@ -158,7 +158,7 @@ vk::ImageSubresourceRange MakeSubresourceRange(vk::ImageAspectFlags aspect, u32 
     };
 }
 
-constexpr u64 UPLOAD_BUFFER_SIZE = 512_MiB;
+constexpr u64 UPLOAD_BUFFER_SIZE = 64_MiB;
 constexpr u64 DOWNLOAD_BUFFER_SIZE = 16_MiB;
 
 } // Anonymous namespace
@@ -407,7 +407,7 @@ void TextureRuntime::ClearTextureWithRenderpass(Surface& surface,
 
     const auto color_format = is_color ? surface.pixel_format : PixelFormat::Invalid;
     const auto depth_format = is_color ? PixelFormat::Invalid : surface.pixel_format;
-    const auto render_pass = renderpass_cache.GetRenderpass(color_format, depth_format, true);
+    const auto render_pass = renderpass_cache.GetRenderpass(color_format, depth_format, false);
 
     const RecordParams params = {
         .aspect = surface.Aspect(),
@@ -416,7 +416,13 @@ void TextureRuntime::ClearTextureWithRenderpass(Surface& surface,
         .src_image = surface.Image(),
     };
 
-    scheduler.Record([params, is_color, clear, render_pass,
+    // Use a non-clearing renderpass + vkCmdClearAttachments instead of beginning
+    // a renderpass with loadOp=eClear and immediately ending it. The old approach
+    // forced Mali to allocate tile memory, clear it, then store it — all for zero
+    // draw calls. vkCmdClearAttachments is handled as a tile-local clear on tiler
+    // GPUs and avoids the degenerate begin+end overhead.
+    const auto scaled_rect = surface.GetScaledRect();
+    scheduler.Record([params, is_color, clear, render_pass, scaled_rect,
                       framebuffer = surface.Framebuffer()](vk::CommandBuffer cmdbuf) {
         const vk::AccessFlags access_flag =
             is_color ? vk::AccessFlagBits::eColorAttachmentRead |
@@ -450,31 +456,46 @@ void TextureRuntime::ClearTextureWithRenderpass(Surface& surface,
             .subresourceRange = MakeSubresourceRange(params.aspect, clear.texture_level),
         };
 
-        const vk::Rect2D render_area = {
-            .offset{
-                .x = static_cast<s32>(clear.texture_rect.left),
-                .y = static_cast<s32>(clear.texture_rect.bottom),
-            },
-            .extent{
-                .width = clear.texture_rect.GetWidth(),
-                .height = clear.texture_rect.GetHeight(),
-            },
+        // Begin a non-clearing renderpass covering the full surface, then use
+        // vkCmdClearAttachments to clear just the requested sub-rect.
+        const vk::Rect2D full_render_area = {
+            .offset{.x = static_cast<s32>(scaled_rect.left),
+                    .y = static_cast<s32>(scaled_rect.bottom)},
+            .extent{.width = scaled_rect.GetWidth(), .height = scaled_rect.GetHeight()},
         };
-
-        const auto clear_value = MakeClearValue(clear.value);
 
         const vk::RenderPassBeginInfo renderpass_begin_info = {
             .renderPass = render_pass,
             .framebuffer = framebuffer,
-            .renderArea = render_area,
-            .clearValueCount = 1,
-            .pClearValues = &clear_value,
+            .renderArea = full_render_area,
+            .clearValueCount = 0,
+            .pClearValues = nullptr,
         };
 
         cmdbuf.pipelineBarrier(params.pipeline_flags, pipeline_flags,
                                vk::DependencyFlagBits::eByRegion, {}, {}, pre_barrier);
 
         cmdbuf.beginRenderPass(renderpass_begin_info, vk::SubpassContents::eInline);
+
+        const vk::ClearAttachment clear_attachment = {
+            .aspectMask = is_color ? vk::ImageAspectFlagBits::eColor
+                                   : (vk::ImageAspectFlagBits::eDepth |
+                                      vk::ImageAspectFlagBits::eStencil),
+            .colorAttachment = 0,
+            .clearValue = MakeClearValue(clear.value),
+        };
+        const vk::ClearRect clear_rect = {
+            .rect{
+                .offset{.x = static_cast<s32>(clear.texture_rect.left),
+                        .y = static_cast<s32>(clear.texture_rect.bottom)},
+                .extent{.width = clear.texture_rect.GetWidth(),
+                        .height = clear.texture_rect.GetHeight()},
+            },
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+        cmdbuf.clearAttachments(clear_attachment, clear_rect);
+
         cmdbuf.endRenderPass();
 
         cmdbuf.pipelineBarrier(pipeline_flags, params.pipeline_flags,
@@ -496,8 +517,20 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
         .dst_image = dest.Image(),
     };
 
+    // Compute the mip level range actually affected by the copies so barriers
+    // are scoped tightly. Over-broad barriers (VK_REMAINING_MIP_LEVELS) force
+    // Mali to flush/invalidate more tile state than necessary.
+    u32 src_min_level = std::numeric_limits<u32>::max();
+    u32 src_max_level = 0;
+    u32 dst_min_level = std::numeric_limits<u32>::max();
+    u32 dst_max_level = 0;
+
     boost::container::small_vector<vk::ImageCopy, 2> vk_copies;
     std::ranges::transform(copies, std::back_inserter(vk_copies), [&](const auto& copy) {
+        src_min_level = std::min(src_min_level, copy.src_level);
+        src_max_level = std::max(src_max_level, copy.src_level);
+        dst_min_level = std::min(dst_min_level, copy.dst_level);
+        dst_max_level = std::max(dst_max_level, copy.dst_level);
         return vk::ImageCopy{
             .srcSubresource{
                 .aspectMask = params.aspect,
@@ -519,7 +552,11 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
         };
     });
 
-    scheduler.Record([params, copies = std::move(vk_copies)](vk::CommandBuffer cmdbuf) {
+    const u32 src_level_count = src_max_level - src_min_level + 1;
+    const u32 dst_level_count = dst_max_level - dst_min_level + 1;
+
+    scheduler.Record([params, copies = std::move(vk_copies), src_min_level, src_level_count,
+                      dst_min_level, dst_level_count](vk::CommandBuffer cmdbuf) {
         const bool self_copy = params.src_image == params.dst_image;
         const vk::ImageLayout new_src_layout =
             self_copy ? vk::ImageLayout::eGeneral : vk::ImageLayout::eTransferSrcOptimal;
@@ -535,7 +572,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
-                .subresourceRange = MakeSubresourceRange(params.aspect, 0, VK_REMAINING_MIP_LEVELS),
+                .subresourceRange = MakeSubresourceRange(params.aspect, src_min_level, src_level_count),
             },
             vk::ImageMemoryBarrier{
                 .srcAccessMask = params.dst_access,
@@ -545,7 +582,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.dst_image,
-                .subresourceRange = MakeSubresourceRange(params.aspect, 0, VK_REMAINING_MIP_LEVELS),
+                .subresourceRange = MakeSubresourceRange(params.aspect, dst_min_level, dst_level_count),
             },
         };
         const std::array post_barriers = {
@@ -557,7 +594,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
-                .subresourceRange = MakeSubresourceRange(params.aspect, 0, VK_REMAINING_MIP_LEVELS),
+                .subresourceRange = MakeSubresourceRange(params.aspect, src_min_level, src_level_count),
             },
             vk::ImageMemoryBarrier{
                 .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
@@ -567,7 +604,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.dst_image,
-                .subresourceRange = MakeSubresourceRange(params.aspect, 0, VK_REMAINING_MIP_LEVELS),
+                .subresourceRange = MakeSubresourceRange(params.aspect, dst_min_level, dst_level_count),
             },
         };
 
@@ -1102,9 +1139,10 @@ void Surface::ScaleUp(u32 new_scale) {
         flags |= vk::ImageCreateFlagBits::eMutableFormat;
     }
 
+    const bool need_format_list = is_mutable && instance.IsImageFormatListSupported();
     handles[Type::Scaled].Create(GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                                 traits.native, traits.usage, flags, traits.aspect, false,
-                                 DebugName(true));
+                                 traits.native, traits.usage, flags, traits.aspect,
+                                 need_format_list, DebugName(true));
     current = Type::Scaled;
 
     runtime.renderpass_cache.EndRendering();
