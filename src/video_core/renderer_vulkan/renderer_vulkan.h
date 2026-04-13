@@ -81,6 +81,7 @@ public:
     void NotifySurfaceChanged(bool second) override;
 
     void SwapBuffers() override;
+    bool TrySwapBuffers() override;
     void TryPresent(int timeout_ms, bool is_secondary) override {}
 
 private:
@@ -98,6 +99,8 @@ private:
     void PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout);
     void RenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
                         bool flipped);
+    bool TryRenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
+                           bool flipped);
 
     void DrawScreens(Frame* frame, const Layout::FramebufferLayout& layout, bool flipped);
     void DrawBottomScreen(const Layout::FramebufferLayout& layout,

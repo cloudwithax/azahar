@@ -59,6 +59,9 @@ public:
     /// Returns the last used render frame.
     Frame* GetRenderFrame();
 
+    /// Returns a free render frame without blocking. Returns nullptr if none available.
+    Frame* TryGetRenderFrame();
+
     /// Recreates the render frame to match provided parameters.
     void RecreateFrame(Frame* frame, u32 width, u32 height);
 

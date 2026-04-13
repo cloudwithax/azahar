@@ -47,6 +47,13 @@ public:
     /// Finalize rendering the guest frame and draw into the presentation texture
     virtual void SwapBuffers() = 0;
 
+    /// Non-blocking swap: returns true if a frame was presented, false if skipped (GPU busy).
+    /// Default implementation falls back to blocking SwapBuffers.
+    virtual bool TrySwapBuffers() {
+        SwapBuffers();
+        return true;
+    }
+
     /// Draws the latest frame to the window waiting timeout_ms for a frame to arrive (Renderer
     /// specific implementation)
     virtual void TryPresent(int timeout_ms, bool is_secondary) = 0;

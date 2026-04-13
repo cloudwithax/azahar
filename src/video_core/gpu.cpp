@@ -411,15 +411,24 @@ void GPU::MemoryTransfer() {
 }
 
 void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
-    // Present renderered frame.
-    impl->renderer->SwapBuffers();
-
-    // Signal to GSP that GPU interrupt has occurred
+    // Signal VBlank interrupts BEFORE rendering so the game clock advances at the correct
+    // rate regardless of GPU performance. On slow GPUs (e.g. RK3568 Mali), SwapBuffers can
+    // block for 30+ ms waiting on presentation, which previously halved the game speed since
+    // the 3DS ties game logic to VBlank interrupts.
     impl->signal_interrupt(Service::GSP::InterruptId::PDC0);
     impl->signal_interrupt(Service::GSP::InterruptId::PDC1);
 
-    // Reschedule recurrent event
+    // Reschedule the next VBlank immediately so the emulated clock keeps ticking.
     impl->timing.ScheduleEvent(FRAME_TICKS - cycles_late, impl->vblank_event);
+
+    // Attempt a non-blocking frame present. If the GPU is still busy with the
+    // previous frame, skip this one — the game runs at full speed with dropped
+    // frames rather than half speed with every frame rendered.
+    if (!impl->renderer->TrySwapBuffers()) {
+        // Frame skipped — still need to end the system frame for perf stats.
+        impl->system.perf_stats->EndSystemFrame();
+        impl->system.perf_stats->BeginSystemFrame();
+    }
 }
 
 void GPU::RecreateRenderer(Frontend::EmuWindow& emu_window, Frontend::EmuWindow* secondary_window) {

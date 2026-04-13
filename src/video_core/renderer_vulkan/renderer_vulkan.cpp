@@ -256,6 +256,75 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
     window.Present(frame);
 }
 
+bool RendererVulkan::TryRenderToWindow(PresentWindow& window,
+                                       const Layout::FramebufferLayout& layout, bool flipped) {
+    Frame* frame = window.TryGetRenderFrame();
+    if (!frame) {
+        return false;
+    }
+
+    if (layout.width != frame->width || layout.height != frame->height) {
+        window.WaitPresent();
+        scheduler.Finish();
+        window.RecreateFrame(frame, layout.width, layout.height);
+    }
+
+    clear_color.float32[0] = Settings::values.bg_red.GetValue();
+    clear_color.float32[1] = Settings::values.bg_green.GetValue();
+    clear_color.float32[2] = Settings::values.bg_blue.GetValue();
+    clear_color.float32[3] = 1.0f;
+
+    DrawScreens(frame, layout, flipped);
+    scheduler.Flush(frame->render_ready);
+
+    window.Present(frame);
+    return true;
+}
+
+bool RendererVulkan::TrySwapBuffers() {
+    system.perf_stats->StartSwap();
+    const Layout::FramebufferLayout& layout = render_window.GetFramebufferLayout();
+    PrepareRendertarget();
+
+    if (!TryRenderToWindow(main_present_window, layout, false)) {
+        // GPU is busy — skip this frame's presentation entirely.
+        system.perf_stats->EndSwap();
+        return false;
+    }
+
+    RenderScreenshot();
+
+#ifndef ANDROID
+    if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows) {
+        ASSERT(secondary_window);
+        const auto& secondary_layout = secondary_window->GetFramebufferLayout();
+        if (!secondary_present_window_ptr) {
+            secondary_present_window_ptr = std::make_unique<PresentWindow>(
+                *secondary_window, instance, scheduler, IsLowRefreshRate(), rasterizer);
+        }
+        RenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
+        secondary_window->PollEvents();
+    }
+#endif
+
+#ifdef ANDROID
+    if (secondary_window) {
+        const auto& secondary_layout = secondary_window->GetFramebufferLayout();
+        if (!secondary_present_window_ptr) {
+            secondary_present_window_ptr = std::make_unique<PresentWindow>(
+                *secondary_window, instance, scheduler, IsLowRefreshRate(), rasterizer);
+        }
+        RenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
+        secondary_window->PollEvents();
+    }
+#endif
+
+    system.perf_stats->EndSwap();
+    rasterizer.TickFrame();
+    EndFrame();
+    return true;
+}
+
 void RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuffer,
                                         ScreenInfo& screen_info, bool right_eye) {
 
