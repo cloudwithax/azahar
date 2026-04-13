@@ -113,29 +113,44 @@ void RasterizerCache<T>::TickFrame() {
 template <class T>
 void RasterizerCache<T>::RunGarbageCollector() {
     frame_tick++;
-    for (auto it = sentenced.begin(); it != sentenced.end();) {
-        const auto [surface_id, tick] = *it;
-        if (frame_tick - tick <= runtime.RemoveThreshold()) {
-            it++;
+    const u64 threshold = runtime.RemoveThreshold();
+    // Cap work per frame to avoid long GC pauses on low-core devices.
+    // Process at most 8 expired surfaces per frame; the rest survive another tick.
+    constexpr std::size_t max_collect_per_frame = 8;
+    std::size_t collected = 0;
+
+    for (std::size_t i = 0; i < sentenced.size();) {
+        if (collected >= max_collect_per_frame) {
+            break;
+        }
+        const auto [surface_id, tick] = sentenced[i];
+        if (frame_tick - tick <= threshold) {
+            i++;
             continue;
         }
         RemoveFramebuffers(surface_id);
         slot_surfaces.erase(surface_id);
-        it = sentenced.erase(it);
+        // Swap-and-pop: O(1) removal from vector
+        sentenced[i] = sentenced.back();
+        sentenced.pop_back();
+        collected++;
+        // Don't increment i — the swapped element needs to be checked
     }
 }
 
 template <class T>
 void RasterizerCache<T>::RemoveFramebuffers(SurfaceId surface_id) {
-    for (auto it = framebuffers.begin(); it != framebuffers.end();) {
-        const auto& params = it->first;
-        if (params.color_id == surface_id || params.depth_id == surface_id) {
-            slot_framebuffers.erase(it->second);
-            it = framebuffers.erase(it);
-        } else {
-            it++;
+    // Use the reverse index for O(k) removal where k = framebuffers referencing this surface,
+    // instead of O(N) scan over all framebuffers.
+    auto range = surface_to_framebuffers.equal_range(surface_id);
+    for (auto it = range.first; it != range.second; ++it) {
+        auto fb_it = framebuffers.find(it->second);
+        if (fb_it != framebuffers.end()) {
+            slot_framebuffers.erase(fb_it->second);
+            framebuffers.erase(fb_it);
         }
     }
+    surface_to_framebuffers.erase(surface_id);
 }
 
 template <class T>
@@ -769,6 +784,13 @@ FramebufferHelper<T> RasterizerCache<T>::GetFramebufferSurfaces(bool using_color
     auto [it, new_framebuffer] = framebuffers.try_emplace(fb_params);
     if (new_framebuffer) {
         it->second = slot_framebuffers.insert(runtime, fb_params, color_surface, depth_surface);
+        // Maintain reverse index for O(1) framebuffer removal during GC.
+        if (color_id) {
+            surface_to_framebuffers.emplace(color_id, fb_params);
+        }
+        if (depth_id) {
+            surface_to_framebuffers.emplace(depth_id, fb_params);
+        }
     }
 
     return FramebufferHelper<T>{this, &slot_framebuffers[it->second],
@@ -1234,6 +1256,7 @@ void RasterizerCache<T>::ClearAll(bool flush) {
     cached_pages -= flush_interval;
     dirty_regions.clear();
     page_table.clear();
+    surface_to_framebuffers.clear();
 }
 
 template <class T>

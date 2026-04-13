@@ -36,6 +36,10 @@ public:
 private:
     std::unique_ptr<soundtouch::SoundTouch> sound_touch;
     double stretch_ratio = 1.0;
+    /// Cached LPF gain to avoid std::exp() on every callback invocation.
+    /// Invalidated when num_out changes (which is typically constant per session).
+    double cached_lpf_gain = 0.0;
+    std::size_t cached_num_out = 0;
 };
 
 } // namespace AudioCore

@@ -11,7 +11,9 @@
 
 namespace Vulkan {
 
-constexpr u32 MinDrawsToFlush = 20;
+// Lower threshold for tiler GPUs (Mali/Adreno/PowerVR) to reduce tile buffer pressure.
+// Desktop GPUs can tolerate more draws between flushes.
+constexpr u32 MinDrawsToFlush = 10;
 
 using VideoCore::PixelFormat;
 using VideoCore::SurfaceType;

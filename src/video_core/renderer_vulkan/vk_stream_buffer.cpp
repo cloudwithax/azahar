@@ -91,8 +91,11 @@ u32 GetMemoryType(const vk::PhysicalDeviceMemoryProperties& properties, BufferTy
                     BufferTypeName(type));
 }
 
-constexpr u64 WATCHES_INITIAL_RESERVE = 0x4000;
-constexpr u64 WATCHES_RESERVE_CHUNK = 0x1000;
+// Pre-reserve enough watches to avoid mid-session reallocation.
+// With ~6 watches per draw and typical scenes of 200-400 draws, 0x8000 handles
+// several buffer wraps before needing to grow.
+constexpr u64 WATCHES_INITIAL_RESERVE = 0x8000;
+constexpr u64 WATCHES_RESERVE_CHUNK = 0x2000;
 
 } // Anonymous namespace
 

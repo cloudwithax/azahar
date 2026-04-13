@@ -19,41 +19,38 @@ ResourcePool::ResourcePool(MasterSemaphore* master_semaphore_, std::size_t grow_
     : master_semaphore{master_semaphore_}, grow_step{grow_step_} {}
 
 std::size_t ResourcePool::CommitResource() {
-    u64 gpu_tick = master_semaphore->KnownGpuTick();
-    const auto search = [this, gpu_tick](std::size_t begin,
-                                         std::size_t end) -> std::optional<std::size_t> {
-        for (std::size_t iterator = begin; iterator < end; ++iterator) {
-            if (gpu_tick >= ticks[iterator]) {
-                ticks[iterator] = master_semaphore->CurrentTick();
-                return iterator;
-            }
-        }
-        return std::nullopt;
-    };
-
-    // Try to find a free resource from the hinted position to the end.
-    auto found = search(hint_iterator, ticks.size());
-    if (!found) {
-        // Refresh semaphore to query updated results
-        master_semaphore->Refresh();
-        gpu_tick = master_semaphore->KnownGpuTick();
-        found = search(hint_iterator, ticks.size());
-    }
-    if (!found) {
-        // Search from beginning to the hinted position.
-        found = search(0, hint_iterator);
-        if (!found) {
-            // Both searches failed, the pool is full; handle it.
-            const std::size_t free_resource = ManageOverflow();
-
-            ticks[free_resource] = master_semaphore->CurrentTick();
-            found = free_resource;
-        }
+    // Fast path: grab from the free-list if available (O(1)).
+    if (!free_list.empty()) {
+        const std::size_t index = free_list.back();
+        free_list.pop_back();
+        ticks[index] = master_semaphore->CurrentTick();
+        return index;
     }
 
-    // Free iterator is hinted to the resource after the one that's been commited.
-    hint_iterator = (*found + 1) % ticks.size();
-    return *found;
+    // Free-list empty — refresh GPU tick and rebuild it.
+    master_semaphore->Refresh();
+    RefreshFreeList();
+    if (!free_list.empty()) {
+        const std::size_t index = free_list.back();
+        free_list.pop_back();
+        ticks[index] = master_semaphore->CurrentTick();
+        return index;
+    }
+
+    // Pool is completely full — grow it.
+    const std::size_t free_resource = ManageOverflow();
+    ticks[free_resource] = master_semaphore->CurrentTick();
+    return free_resource;
+}
+
+void ResourcePool::RefreshFreeList() {
+    const u64 gpu_tick = master_semaphore->KnownGpuTick();
+    free_list.clear();
+    for (std::size_t i = 0; i < ticks.size(); ++i) {
+        if (gpu_tick >= ticks[i]) {
+            free_list.push_back(i);
+        }
+    }
 }
 
 std::size_t ResourcePool::ManageOverflow() {

@@ -141,7 +141,10 @@ RasterizerVulkan::~RasterizerVulkan() = default;
 
 void RasterizerVulkan::TickFrame() {
 #ifdef ANDROID
-    if (!Settings::values.async_presentation.GetValue() || ++frames_since_worker_wait >= 4) {
+    // On low-core ARM devices (RK3568 etc.), WaitWorker() is a full CPU-GPU sync that stalls
+    // the emulation thread. With async presentation, only sync every 8 frames to let the GPU
+    // pipeline stay full. The present thread handles frame pacing independently.
+    if (!Settings::values.async_presentation.GetValue() || ++frames_since_worker_wait >= 8) {
         scheduler.WaitWorker();
         frames_since_worker_wait = 0;
     }

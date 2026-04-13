@@ -20,6 +20,9 @@
 #endif
 #include <sched.h>
 #include <sys/resource.h>
+#ifdef __ANDROID__
+#include <sys/syscall.h>
+#endif
 #endif
 #ifndef _WIN32
 #include <unistd.h>
@@ -83,6 +86,41 @@ int GetNiceValue(ThreadPriority priority) {
 } // Anonymous namespace
 
 void SetCurrentThreadPriority(ThreadPriority new_priority) {
+#ifdef __ANDROID__
+    // On Android, unprivileged apps cannot set negative nice values via setpriority().
+    // Use the Android-specific thread priority range with the thread's kernel tid.
+    // Android priority range: 19 (lowest) to -20 (highest, requires permission).
+    // For unprivileged apps the usable range is roughly 19 to -8.
+    // ANDROID_PRIORITY_AUDIO = -16, ANDROID_PRIORITY_URGENT_AUDIO = -19
+    // ANDROID_PRIORITY_DISPLAY = -4, ANDROID_PRIORITY_FOREGROUND = -2
+    int android_priority;
+    switch (new_priority) {
+    case ThreadPriority::Low:
+        android_priority = 10; // ANDROID_PRIORITY_BACKGROUND
+        break;
+    case ThreadPriority::Normal:
+        android_priority = 0; // ANDROID_PRIORITY_DEFAULT
+        break;
+    case ThreadPriority::High:
+        android_priority = -4; // ANDROID_PRIORITY_DISPLAY
+        break;
+    case ThreadPriority::VeryHigh:
+        android_priority = -8; // ANDROID_PRIORITY_URGENT_DISPLAY
+        break;
+    case ThreadPriority::Critical:
+        android_priority = -16; // ANDROID_PRIORITY_AUDIO
+        break;
+    default:
+        android_priority = 0;
+        break;
+    }
+    // Use the thread id (not process id) to set per-thread priority on Android.
+    const pid_t tid = static_cast<pid_t>(syscall(__NR_gettid));
+    if (setpriority(PRIO_PROCESS, tid, android_priority) != 0) {
+        LOG_WARNING(Common, "Failed to set Android thread priority {} for tid {}: {}",
+                    android_priority, tid, GetLastErrorMsg());
+    }
+#else
     const int nice_value = GetNiceValue(new_priority);
     if (setpriority(PRIO_PROCESS, 0, nice_value) == 0) {
         return;
@@ -102,6 +140,7 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
     }
 
     pthread_setschedparam(this_thread, scheduling_type, &params);
+#endif
 }
 
 #endif

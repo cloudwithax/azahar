@@ -5,7 +5,6 @@
 #pragma once
 
 #include <functional>
-#include <list>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -217,8 +216,11 @@ private:
     std::unordered_map<TextureCubeConfig, TextureCube> texture_cube_cache;
     tsl::robin_pg_map<u64, std::vector<SurfaceId>, Common::IdentityHash<u64>> page_table;
     std::unordered_map<FramebufferParams, FramebufferId> framebuffers;
+    /// Reverse index: surface -> framebuffer params that reference it. O(1) removal.
+    std::unordered_multimap<SurfaceId, FramebufferParams> surface_to_framebuffers;
     std::unordered_map<SamplerParams, SamplerId> samplers;
-    std::list<std::pair<SurfaceId, u64>> sentenced;
+    /// Surfaces awaiting destruction. Vector with swap-pop for cache-friendly iteration.
+    std::vector<std::pair<SurfaceId, u64>> sentenced;
     Common::SlotVector<Surface> slot_surfaces;
     Common::SlotVector<Sampler> slot_samplers;
     Common::SlotVector<Framebuffer> slot_framebuffers;

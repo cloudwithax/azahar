@@ -35,6 +35,9 @@ protected:
     /// Called when a chunk of resources have to be allocated.
     virtual void Allocate(std::size_t begin, std::size_t end) = 0;
 
+    /// Called when the GPU advances and resources are freed. Populates free_list.
+    void RefreshFreeList();
+
 private:
     /// Manages pool overflow allocating new resources.
     std::size_t ManageOverflow();
@@ -44,6 +47,8 @@ protected:
     std::size_t grow_step = 0;     ///< Number of new resources created after an overflow
     std::size_t hint_iterator = 0; ///< Hint to where the next free resources is likely to be found
     std::vector<u64> ticks;        ///< Ticks for each resource
+    /// Free-list: indices of resources known to be available. Avoids O(N) scan.
+    std::vector<std::size_t> free_list;
 };
 
 class CommandPool final : public ResourcePool {
