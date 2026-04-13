@@ -96,7 +96,10 @@ private:
     void RenderScreenshot();
     void RenderScreenshotWithStagingCopy();
     bool TryRenderScreenshotWithHostMemory();
+    void FinalizeFrame();
     void PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout);
+    void RenderToFrame(PresentWindow& window, Frame* frame, const Layout::FramebufferLayout& layout,
+                       bool flipped);
     void RenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
                         bool flipped);
     bool TryRenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,

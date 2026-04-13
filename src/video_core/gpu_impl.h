@@ -33,6 +33,7 @@ struct GPU::Impl {
     std::unique_ptr<RendererBase> renderer;
     RasterizerInterface* rasterizer;
     std::unique_ptr<SwRenderer::SwBlitter> sw_blitter;
+    u64 current_program_id{};
     Core::TimingEventType* vblank_event;
     Service::GSP::InterruptHandler signal_interrupt;
 

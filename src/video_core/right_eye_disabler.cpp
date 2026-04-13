@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include "common/hacks/hack_manager.h"
 #include "common/settings.h"
 #include "right_eye_disabler.h"
 #include "video_core/gpu.h"
@@ -58,7 +59,9 @@ void RightEyeDisabler::ReportEndFrame() {
     if (!enabled)
         return;
 
-    enable_for_frame = Settings::values.disable_right_eye_render.GetValue();
+    enable_for_frame = Common::Hacks::hack_manager.OverrideBooleanSetting(
+        Common::Hacks::HackType::RIGHT_EYE_DISABLE, gpu.impl->current_program_id,
+        Settings::values.disable_right_eye_render.GetValue());
 
     if (display_tranfer_happened) {
         top_screen_drawn = false;

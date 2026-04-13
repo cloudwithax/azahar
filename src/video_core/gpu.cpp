@@ -313,22 +313,10 @@ GraphicsDebugger& GPU::Debugger() {
 }
 
 void GPU::ApplyPerProgramSettings(u64 program_ID) {
-    auto hack = Common::Hacks::hack_manager.GetHack(
-        Common::Hacks::HackType::ACCURATE_MULTIPLICATION, program_ID);
-    bool use_accurate_mul = Settings::values.shaders_accurate_mul.GetValue();
-    if (hack) {
-        switch (hack->mode) {
-        case Common::Hacks::HackAllowMode::DISALLOW:
-            use_accurate_mul = false;
-            break;
-        case Common::Hacks::HackAllowMode::FORCE:
-            use_accurate_mul = true;
-            break;
-        case Common::Hacks::HackAllowMode::ALLOW:
-        default:
-            break;
-        }
-    }
+    impl->current_program_id = program_ID;
+    const bool use_accurate_mul = Common::Hacks::hack_manager.OverrideBooleanSetting(
+        Common::Hacks::HackType::ACCURATE_MULTIPLICATION, program_ID,
+        Settings::values.shaders_accurate_mul.GetValue());
     impl->rasterizer->SetAccurateMul(use_accurate_mul);
 }
 
@@ -424,11 +412,7 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
     // Attempt a non-blocking frame present. If the GPU is still busy with the
     // previous frame, skip this one — the game runs at full speed with dropped
     // frames rather than half speed with every frame rendered.
-    if (!impl->renderer->TrySwapBuffers()) {
-        // Frame skipped — still need to end the system frame for perf stats.
-        impl->system.perf_stats->EndSystemFrame();
-        impl->system.perf_stats->BeginSystemFrame();
-    }
+    impl->renderer->TrySwapBuffers();
 }
 
 void GPU::RecreateRenderer(Frontend::EmuWindow& emu_window, Frontend::EmuWindow* secondary_window) {
