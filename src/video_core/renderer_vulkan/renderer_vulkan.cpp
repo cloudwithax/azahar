@@ -125,7 +125,7 @@ RendererVulkan::RendererVulkan(Core::System& system, Pica::PicaCore& pica_,
                                          scheduler,
                                          renderpass_cache,
                                          update_queue,
-                                         main_present_window.ImageCount()},
+                                         main_present_window.FrameCount()},
       present_heap{instance, scheduler.GetMasterSemaphore(), PRESENT_BINDINGS, 32} {
     CompileShaders();
     BuildLayouts();

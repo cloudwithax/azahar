@@ -116,6 +116,9 @@ void Scheduler::DispatchWork() {
 
 void Scheduler::WorkerThread(std::stop_token stop_token) {
     Common::SetCurrentThreadName("VulkanWorker");
+#ifdef ANDROID
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+#endif
 
     const auto TryPopQueue{[this](auto& work) -> bool {
         if (work_queue.empty()) {

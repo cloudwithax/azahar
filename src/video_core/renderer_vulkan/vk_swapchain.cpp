@@ -239,8 +239,15 @@ void Swapchain::SetSurfaceProperties() {
                                  std::min(capabilities.maxImageExtent.height, height));
     }
 
-    // Select number of images in swap chain, we prefer one buffer in the background to work on
+    // Select number of images in swap chain, we prefer one buffer in the background to work on.
+    // On Android, keep an extra buffer in flight so SurfaceFlinger jitter is less likely to stall
+    // the render thread during heavy scenes.
     image_count = capabilities.minImageCount + 1;
+#ifdef ANDROID
+    if (Settings::values.async_presentation.GetValue()) {
+        image_count = std::max(image_count, 4u);
+    }
+#endif
     if (capabilities.maxImageCount > 0) {
         image_count = std::min(image_count, capabilities.maxImageCount);
     }
