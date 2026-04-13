@@ -72,6 +72,18 @@ private:
     EGLContext egl_context{};
 };
 
+void EmuWindow_Android_OpenGL::UpdateSwapInterval() {
+    const int requested_interval = Settings::values.use_vsync.GetValue() ? 1 : 0;
+    if (requested_interval == current_swap_interval) {
+        return;
+    }
+    if (!eglSwapInterval(egl_display, requested_interval)) {
+        LOG_CRITICAL(Frontend, "eglSwapInterval() failed");
+        return;
+    }
+    current_swap_interval = requested_interval;
+}
+
 EmuWindow_Android_OpenGL::EmuWindow_Android_OpenGL(Core::System& system_, ANativeWindow* surface,
                                                    bool is_secondary, EGLContext* sharedContext)
     : EmuWindow_Android{surface, is_secondary}, system{system_} {
@@ -122,10 +134,7 @@ EmuWindow_Android_OpenGL::EmuWindow_Android_OpenGL(Core::System& system_, ANativ
         LOG_CRITICAL(Frontend, "gladLoadGLES2Loader() failed");
         return;
     }
-    if (!eglSwapInterval(egl_display, Settings::values.use_vsync ? 1 : 0)) {
-        LOG_CRITICAL(Frontend, "eglSwapInterval() failed");
-        return;
-    }
+    UpdateSwapInterval();
 
     OnFramebufferSizeChanged();
 }
@@ -218,7 +227,7 @@ void EmuWindow_Android_OpenGL::TryPresenting() {
     }
     eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    eglSwapInterval(egl_display, Settings::values.use_vsync ? 1 : 0);
+    UpdateSwapInterval();
     system.GPU().Renderer().TryPresent(0, is_secondary);
     eglSwapBuffers(egl_display, egl_surface);
 }

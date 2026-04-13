@@ -16,6 +16,7 @@ import android.view.SurfaceView
 import android.view.WindowManager
 import org.citra.citra_emu.features.settings.model.IntSetting
 import org.citra.citra_emu.NativeLibrary
+import org.citra.citra_emu.utils.RefreshRateUtil
 
 class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     private var pres: SecondaryDisplayPresentation? = null
@@ -143,6 +144,7 @@ class SecondaryDisplayPresentation(
             override fun surfaceChanged(
                 holder: SurfaceHolder, format: Int, width: Int, height: Int
             ) {
+                RefreshRateUtil.setGameSurfaceFrameRate(holder.surface)
                 parent.updateSurface()
             }
 

@@ -83,6 +83,7 @@ import org.citra.citra_emu.utils.GameHelper
 import org.citra.citra_emu.utils.GameIconUtils
 import org.citra.citra_emu.utils.EmulationLifecycleUtil
 import org.citra.citra_emu.utils.Log
+import org.citra.citra_emu.utils.RefreshRateUtil
 import org.citra.citra_emu.utils.ViewUtils
 import org.citra.citra_emu.viewmodel.EmulationViewModel
 
@@ -112,6 +113,10 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback, Choreographer.Fram
 
     // Only used if a game is passed through intent on google play variant
     private var gameFd: Int? = null
+
+    private fun usesChoreographerPresentation(): Boolean {
+        return IntSetting.GRAPHICS_API.int == 1
+    }
 
     override fun onAttach(context: Context) {
         super.onAttach(context)
@@ -503,7 +508,9 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback, Choreographer.Fram
 
     override fun onResume() {
         super.onResume()
-        Choreographer.getInstance().postFrameCallback(this)
+        if (usesChoreographerPresentation()) {
+            Choreographer.getInstance().postFrameCallback(this)
+        }
         if (NativeLibrary.isRunning()) {
             emulationState.unpause()
 
@@ -533,7 +540,9 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback, Choreographer.Fram
         if (NativeLibrary.isRunning()) {
             emulationState.pause()
         }
-        Choreographer.getInstance().removeFrameCallback(this)
+        if (usesChoreographerPresentation()) {
+            Choreographer.getInstance().removeFrameCallback(this)
+        }
         super.onPause()
     }
 
@@ -1409,6 +1418,7 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback, Choreographer.Fram
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         Log.debug("[EmulationFragment] Surface changed. Resolution: " + width + "x" + height)
+        RefreshRateUtil.setGameSurfaceFrameRate(holder.surface)
         emulationState.newSurface(holder.surface)
     }
 
@@ -1417,6 +1427,9 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback, Choreographer.Fram
     }
 
     override fun doFrame(frameTimeNanos: Long) {
+        if (!usesChoreographerPresentation()) {
+            return
+        }
         Choreographer.getInstance().postFrameCallback(this)
         NativeLibrary.doFrame()
     }

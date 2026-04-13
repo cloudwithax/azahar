@@ -309,6 +309,7 @@ void PresentWindow::WaitPresent() {
 
 void PresentWindow::PresentThread(std::stop_token token) {
     Common::SetCurrentThreadName("VulkanPresent");
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
     while (!token.stop_requested()) {
         std::unique_lock lock{queue_mutex};
 

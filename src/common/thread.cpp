@@ -19,6 +19,7 @@
 #include <pthread.h>
 #endif
 #include <sched.h>
+#include <sys/resource.h>
 #endif
 #ifndef _WIN32
 #include <unistd.h>
@@ -60,9 +61,34 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 
 #else
 
-void SetCurrentThreadPriority(ThreadPriority new_priority) {
-    pthread_t this_thread = pthread_self();
+namespace {
 
+int GetNiceValue(ThreadPriority priority) {
+    switch (priority) {
+    case ThreadPriority::Low:
+        return 10;
+    case ThreadPriority::Normal:
+        return 0;
+    case ThreadPriority::High:
+        return -4;
+    case ThreadPriority::VeryHigh:
+        return -8;
+    case ThreadPriority::Critical:
+        return -10;
+    default:
+        return 0;
+    }
+}
+
+} // Anonymous namespace
+
+void SetCurrentThreadPriority(ThreadPriority new_priority) {
+    const int nice_value = GetNiceValue(new_priority);
+    if (setpriority(PRIO_PROCESS, 0, nice_value) == 0) {
+        return;
+    }
+
+    pthread_t this_thread = pthread_self();
     const auto scheduling_type = SCHED_OTHER;
     s32 max_prio = sched_get_priority_max(scheduling_type);
     s32 min_prio = sched_get_priority_min(scheduling_type);

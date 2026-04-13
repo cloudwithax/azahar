@@ -33,6 +33,7 @@ private:
     bool CreateWindowSurface() override;
     void DestroyWindowSurface() override;
     void DestroyContext() override;
+    void UpdateSwapInterval();
 
 private:
     Core::System& system;
@@ -47,4 +48,5 @@ private:
         Stopped,
     };
     PresentingState presenting_state{};
+    int current_swap_interval{-1};
 };
