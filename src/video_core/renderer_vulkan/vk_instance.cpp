@@ -446,6 +446,8 @@ bool Instance::CreateDevice() {
     const bool is_arm = driver_id == vk::DriverIdKHR::eArmProprietary;
     const bool is_qualcomm = driver_id == vk::DriverIdKHR::eQualcommProprietary;
     const bool is_turnip = driver_id == vk::DriverIdKHR::eMesaTurnip;
+    // Detect Mali GPUs regardless of driver (proprietary or Mesa PanVK)
+    const bool is_mali = properties.vendorID == 0x13B5;
 
     add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     image_format_list = add_extension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
@@ -457,8 +459,9 @@ bool Instance::CreateDevice() {
                       "it is broken on Qualcomm drivers");
     const bool has_portability_subset = add_extension(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
     const bool has_extended_dynamic_state =
-        add_extension(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, is_arm || is_qualcomm,
-                      "it is broken on Qualcomm and ARM drivers");
+        add_extension(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+                      is_mali || is_qualcomm,
+                      "it is broken on Qualcomm and Mali GPU drivers");
     const bool has_custom_border_color =
         add_extension(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, is_qualcomm,
                       "it is broken on most Qualcomm driver versions");

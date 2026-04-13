@@ -117,13 +117,21 @@ public:
     }
 
     bool UseGeometryShaders() const {
-#ifdef __ANDROID__
-        // Geometry shaders are extremely expensive on tilers to avoid them at all
-        // cost even if it hurts accuracy somewhat. TODO: Make this an option
-        return false;
-#else
+        // Geometry shaders are extremely expensive on tiler GPUs (Mali, Adreno, PowerVR)
+        // Avoid them even if it hurts accuracy somewhat.
+        if (IsTilerGPU()) {
+            return false;
+        }
         return features.geometryShader;
-#endif
+    }
+
+    /// Returns true if the GPU uses a tile-based rendering architecture
+    bool IsTilerGPU() const {
+        constexpr u32 VENDOR_ARM = 0x13B5;     // ARM Mali
+        constexpr u32 VENDOR_QUALCOMM = 0x5143; // Qualcomm Adreno
+        constexpr u32 VENDOR_IMGTECH = 0x1010;  // Imagination Technologies PowerVR
+        const u32 vendor = properties.vendorID;
+        return vendor == VENDOR_ARM || vendor == VENDOR_QUALCOMM || vendor == VENDOR_IMGTECH;
     }
 
     /// Returns true if anisotropic filtering is supported
@@ -271,10 +279,10 @@ public:
         return min_imported_host_pointer_alignment;
     }
 
-    /// Returns true if commands should be flushed at the end of each major renderpass
+    /// Returns true if commands should be flushed at the end of each major renderpass.
+    /// This benefits all tiler GPUs (Mali, Adreno, PowerVR) by keeping tile buffer pressure low.
     bool ShouldFlush() const {
-        return driver_id == vk::DriverIdKHR::eArmProprietary ||
-               driver_id == vk::DriverIdKHR::eQualcommProprietary;
+        return IsTilerGPU();
     }
 
 protected:
