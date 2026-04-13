@@ -19,10 +19,15 @@ struct CPUCaps {
     bool afp; // Alternate floating-point behavior
     bool asimd;
     bool crc32;
+    bool dotprod; // Dot product instructions (ARMv8.2)
     bool fma;
+    bool fhm;     // Fused Multiply-High (ARMv8.2)
     bool fp;
+    bool fp16;    // Half-precision floating point
     bool sha1;
     bool sha2;
+    bool sha3;
+    bool sha512;
 };
 
 /**

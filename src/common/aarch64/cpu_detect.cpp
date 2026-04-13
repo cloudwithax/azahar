@@ -66,6 +66,11 @@ static CPUCaps Detect() {
     // Set some defaults here
     caps.fma = true;
     caps.afp = false;
+    caps.dotprod = false;
+    caps.fhm = false;
+    caps.fp16 = false;
+    caps.sha3 = false;
+    caps.sha512 = false;
 
 #ifdef __APPLE__
     // M-series CPUs have all of these
@@ -75,6 +80,11 @@ static CPUCaps Detect() {
     caps.crc32 = true;
     caps.sha1 = true;
     caps.sha2 = true;
+    caps.dotprod = true;
+    caps.fhm = true;
+    caps.fp16 = true;
+    caps.sha3 = true;
+    caps.sha512 = true;
     caps.cpu_string = GetCPUString();
 #elif defined(_WIN32)
     // Windows does not provide any mechanism for querying the system registers on ARMv8, unlike
@@ -88,14 +98,25 @@ static CPUCaps Detect() {
     caps.crc32 = true;
     caps.sha1 = true;
     caps.sha2 = true;
+    caps.dotprod = true;
+    caps.fhm = true;
+    caps.fp16 = true;
+    caps.sha3 = true;
+    caps.sha512 = true;
 #else
     caps.cpu_string = GetCPUString();
 
 #ifdef __FreeBSD__
     u_long hwcaps = 0;
+    u_long hwcaps2 = 0;
     elf_aux_info(AT_HWCAP, &hwcaps, sizeof(u_long));
+    elf_aux_info(AT_HWCAP2, &hwcaps2, sizeof(u_long));
 #else
     unsigned long hwcaps = getauxval(AT_HWCAP);
+    unsigned long hwcaps2 = 0;
+#ifdef AT_HWCAP2
+    hwcaps2 = getauxval(AT_HWCAP2);
+#endif
 #endif // __FreeBSD__
     caps.fp = hwcaps & HWCAP_FP;
     caps.asimd = hwcaps & HWCAP_ASIMD;
@@ -103,6 +124,11 @@ static CPUCaps Detect() {
     caps.crc32 = hwcaps & HWCAP_CRC32;
     caps.sha1 = hwcaps & HWCAP_SHA1;
     caps.sha2 = hwcaps & HWCAP_SHA2;
+    caps.sha3 = hwcaps & HWCAP_SHA3;
+    caps.sha512 = hwcaps2 & (1 << 21); // HWCAP2_SHA512
+    caps.dotprod = hwcaps2 & (1 << 13); // HWCAP2_ASIMDDP
+    caps.fhm = hwcaps2 & (1 << 23); // HWCAP2_ASIMDFHM
+    caps.fp16 = hwcaps & HWCAP_FPHP && hwcaps & HWCAP_ASIMDHP;
 #endif // __APPLE__
     return caps;
 }
