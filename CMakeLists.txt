@@ -272,6 +272,23 @@ if (AZAHAR_TARGET_CPU)
     unset(_MCPU_FLAG)
 endif()
 
+# ARM64: Enable ARMv8.2-A features (DotProd, SHA256, FP16) for RK3568 and similar
+# =======================================================================
+if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    include(CheckCCompilerFlag)
+    include(CheckCXXCompilerFlag)
+    CHECK_C_COMPILER_FLAG("-march=armv8.2-a" C_COMPILER_SUPPORTS_ARMV82)
+    CHECK_CXX_COMPILER_FLAG("-march=armv8.2-a" CXX_COMPILER_SUPPORTS_ARMV82)
+
+    if (C_COMPILER_SUPPORTS_ARMV82 AND CXX_COMPILER_SUPPORTS_ARMV82)
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8.2-a")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a")
+        message(STATUS "Enabling ARMv8.2-A features (DotProd, SHA256, FP16)")
+    else()
+        message(STATUS "ARMv8.2-A not supported, using default architecture")
+    endif()
+endif()
+
 # Sanity check : Check that all submodules are present
 # =======================================================================
 
