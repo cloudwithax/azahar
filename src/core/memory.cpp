@@ -708,29 +708,24 @@ MemoryRef MemorySystem::GetPhysicalRef(PAddr address) {
     return {*target_mem.backing_mem, offset_into_region};
 }
 
-std::vector<VAddr> MemorySystem::PhysicalToVirtualAddressForRasterizer(PAddr addr) {
+MemorySystem::VAddrMapping MemorySystem::PhysicalToVirtualAddressForRasterizer(PAddr addr) {
     if (addr >= VRAM_PADDR && addr < VRAM_PADDR_END) {
-        return {addr - VRAM_PADDR + VRAM_VADDR};
+        return {{addr - VRAM_PADDR + VRAM_VADDR}, 1};
     }
-    // NOTE: Order matters here.
     PAddr plg_fb_addr = Plugin3GXFramebufferAddress();
     if (plg_fb_addr && addr >= plg_fb_addr && addr < plg_fb_addr + PLUGIN_3GX_FB_SIZE) {
-        return {addr - plg_fb_addr + PLUGIN_3GX_FB_VADDR};
+        return {{addr - plg_fb_addr + PLUGIN_3GX_FB_VADDR}, 1};
     }
     if (addr >= FCRAM_PADDR && addr < FCRAM_PADDR_END) {
-        return {addr - FCRAM_PADDR + LINEAR_HEAP_VADDR, addr - FCRAM_PADDR + NEW_LINEAR_HEAP_VADDR};
+        return {{addr - FCRAM_PADDR + LINEAR_HEAP_VADDR, addr - FCRAM_PADDR + NEW_LINEAR_HEAP_VADDR}, 2};
     }
     if (addr >= FCRAM_PADDR_END && addr < FCRAM_N3DS_PADDR_END) {
-        return {addr - FCRAM_PADDR + NEW_LINEAR_HEAP_VADDR};
+        return {{addr - FCRAM_PADDR + NEW_LINEAR_HEAP_VADDR}, 1};
     }
-    // While the physical <-> virtual mapping is 1:1 for the regions supported by the cache,
-    // some games (like Pokemon Super Mystery Dungeon) will try to use textures that go beyond
-    // the end address of VRAM, causing the Virtual->Physical translation to fail when flushing
-    // parts of the texture.
     LOG_ERROR(HW_Memory,
               "Trying to use invalid physical address for rasterizer: {:08X} at PC 0x{:08X}", addr,
               impl->GetPC());
-    return {};
+    return {{}, 0};
 }
 
 void MemorySystem::RasterizerMarkRegionCached(PAddr start, u32 size, bool cached) {
@@ -742,7 +737,9 @@ void MemorySystem::RasterizerMarkRegionCached(PAddr start, u32 size, bool cached
     PAddr paddr = start;
 
     for (unsigned i = 0; i < num_pages; ++i, paddr += CITRA_PAGE_SIZE) {
-        for (VAddr vaddr : PhysicalToVirtualAddressForRasterizer(paddr)) {
+        auto mapping = PhysicalToVirtualAddressForRasterizer(paddr);
+        for (u8 j = 0; j < mapping.count; ++j) {
+            VAddr vaddr = mapping.addrs[j];
             impl->cache_marker.Mark(vaddr, cached);
             for (auto& page_table : impl->page_table_list) {
                 PageType& page_type = page_table->attributes[vaddr >> CITRA_PAGE_BITS];

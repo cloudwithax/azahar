@@ -196,29 +196,31 @@ void RasterizerAccelerated::SyncDrawUniforms() {
         fs_data_dirty = true;
     }
 
-    // Sync light uniforms
-    for (u32 light_index = 0; light_index < 8; light_index++) {
-        if (!dirty.CheckLight(light_index)) {
-            continue;
-        }
+    // Sync light uniforms (skip if fragment lighting is disabled)
+    if (regs.texturing.fragment_lighting_enable != 0) {
+        for (u32 light_index = 0; light_index < 8; light_index++) {
+            if (!dirty.CheckLight(light_index)) {
+                continue;
+            }
 
-        const auto& light = regs.lighting.light[light_index];
-        fs_data.light_src[light_index].specular_0 = LightColor(light.specular_0);
-        fs_data.light_src[light_index].specular_1 = LightColor(light.specular_1);
-        fs_data.light_src[light_index].diffuse = LightColor(light.diffuse);
-        fs_data.light_src[light_index].ambient = LightColor(light.ambient);
-        fs_data.light_src[light_index].position = {
-            Pica::f16::FromRaw(light.x).ToFloat32(),
-            Pica::f16::FromRaw(light.y).ToFloat32(),
-            Pica::f16::FromRaw(light.z).ToFloat32(),
-        };
-        fs_data.light_src[light_index].spot_direction = {
-            light.spot_x / 2047.0f, light.spot_y / 2047.0f, light.spot_z / 2047.0f};
-        fs_data.light_src[light_index].dist_atten_bias =
-            Pica::f20::FromRaw(light.dist_atten_bias).ToFloat32();
-        fs_data.light_src[light_index].dist_atten_scale =
-            Pica::f20::FromRaw(light.dist_atten_scale).ToFloat32();
-        fs_data_dirty = true;
+            const auto& light = regs.lighting.light[light_index];
+            fs_data.light_src[light_index].specular_0 = LightColor(light.specular_0);
+            fs_data.light_src[light_index].specular_1 = LightColor(light.specular_1);
+            fs_data.light_src[light_index].diffuse = LightColor(light.diffuse);
+            fs_data.light_src[light_index].ambient = LightColor(light.ambient);
+            fs_data.light_src[light_index].position = {
+                Pica::f16::FromRaw(light.x).ToFloat32(),
+                Pica::f16::FromRaw(light.y).ToFloat32(),
+                Pica::f16::FromRaw(light.z).ToFloat32(),
+            };
+            fs_data.light_src[light_index].spot_direction = {
+                light.spot_x / 2047.0f, light.spot_y / 2047.0f, light.spot_z / 2047.0f};
+            fs_data.light_src[light_index].dist_atten_bias =
+                Pica::f20::FromRaw(light.dist_atten_bias).ToFloat32();
+            fs_data.light_src[light_index].dist_atten_scale =
+                Pica::f20::FromRaw(light.dist_atten_scale).ToFloat32();
+            fs_data_dirty = true;
+        }
     }
 
     // Sync fog uniforms

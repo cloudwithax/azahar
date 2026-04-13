@@ -45,7 +45,8 @@ s64 Timing::GenerateBaseTicks() {
 
 void Timing::UpdateClockSpeed(u32 cpu_clock_percentage) {
     for (auto& timer : timers) {
-        timer->cpu_clock_scale = 100.0 / cpu_clock_percentage;
+        timer->cpu_clock_scale_num = 100;
+        timer->cpu_clock_scale_den = cpu_clock_percentage;
     }
 }
 
@@ -176,7 +177,7 @@ u64 Timing::Timer::GetTicks() const {
 }
 
 void Timing::Timer::AddTicks(u64 ticks) {
-    downcount -= static_cast<u64>(ticks * cpu_clock_scale);
+    downcount -= static_cast<u64>(ticks * cpu_clock_scale_num / cpu_clock_scale_den);
 }
 
 u64 Timing::Timer::GetIdleTicks() const {

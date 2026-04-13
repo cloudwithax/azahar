@@ -235,6 +235,8 @@ public:
         // Stores a scaling for the internal clockspeed. Changing this number results in
         // under/overclocking the guest cpu
         double cpu_clock_scale = 1.0;
+        u32 cpu_clock_scale_num = 100;
+        u32 cpu_clock_scale_den = 100;
 
         template <class Archive>
         void serialize(Archive& ar, const unsigned int) {

@@ -100,7 +100,7 @@ bool CanBlitToSwapchain(const vk::PhysicalDevice& physical_device, vk::Format fo
 [[nodiscard]] u32 RenderFrameCount(u32 swapchain_images) {
 #ifdef ANDROID
     if (Settings::values.async_presentation.GetValue()) {
-        return std::clamp(swapchain_images * 2, 6u, 8u);
+        return std::clamp(swapchain_images + 1, 3u, 5u);
     }
 #endif
     return swapchain_images;
@@ -264,15 +264,14 @@ Frame* PresentWindow::GetRenderFrame() {
     vk::Result result{};
 
     // Wait for the presentation to be finished so all frame resources are free.
-    // Use shorter timeouts with yielding to avoid burning a CPU core on Mali's
-    // ppoll() signal bug (eErrorInitializationFailed requires manual retry).
+    // Use an 8ms timeout to reduce CPU spinning on Mali drivers while still
+    // maintaining frame pacing at 60fps (16.67ms per frame). If the fence
+    // isn't signaled in 8ms, yield and retry (handles Mali ppoll() bug).
     for (;;) {
-        // 2ms timeout — long enough to avoid busy-spinning, short enough for frame pacing
-        result = device.waitForFences(frame->present_done, false, 2'000'000);
+        result = device.waitForFences(frame->present_done, false, 8'000'000);
         if (result == vk::Result::eSuccess) {
             break;
         }
-        // eTimeout or eErrorInitializationFailed (Mali ppoll bug): yield and retry
         std::this_thread::yield();
     }
 
@@ -315,7 +314,8 @@ void PresentWindow::WaitPresent() {
 void PresentWindow::PresentThread(std::stop_token token) {
     Common::SetCurrentThreadName("VulkanPresent");
 #ifdef ANDROID
-    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::VeryHigh);
+    Common::SetThreadAffinityBigCores();
 #else
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
 #endif

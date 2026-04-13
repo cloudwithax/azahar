@@ -522,10 +522,14 @@ static void CopyFrameBuffer(Core::System& system, VAddr dst, VAddr src, u32 dst_
     system.Memory().RasterizerFlushVirtualRegion(src, src_stride * lines, Memory::FlushMode::Flush);
 
     const u32 copy_bytes_per_line = std::min(src_stride, dst_stride);
-    for (u32 y = 0; y < lines; ++y) {
-        std::memcpy(dst_ptr, src_ptr, copy_bytes_per_line);
-        src_ptr += src_stride;
-        dst_ptr += dst_stride;
+    if (src_stride == dst_stride) {
+        std::memcpy(dst_ptr, src_ptr, copy_bytes_per_line * lines);
+    } else {
+        for (u32 y = 0; y < lines; ++y) {
+            std::memcpy(dst_ptr, src_ptr, copy_bytes_per_line);
+            src_ptr += src_stride;
+            dst_ptr += dst_stride;
+        }
     }
 
     system.Memory().RasterizerFlushVirtualRegion(dst, dst_stride * lines,
