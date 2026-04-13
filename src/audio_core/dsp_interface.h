@@ -108,6 +108,8 @@ protected:
     void OutputSample(std::array<s16, 2> sample);
 
 private:
+    static constexpr std::size_t stretch_fifo_capacity = 0x2000;
+
     void FlushResidualStretcherAudio();
     void OutputCallback(s16* buffer, std::size_t num_frames);
 
@@ -116,7 +118,8 @@ private:
     std::atomic<bool> enable_time_stretching = false;
     std::atomic<bool> performing_time_stretching = false;
     std::atomic<bool> flushing_time_stretcher = false;
-    Common::RingBuffer<s16, 0x2000, 2> fifo;
+    Common::RingBuffer<s16, stretch_fifo_capacity, 2> fifo;
+    std::array<s16, stretch_fifo_capacity * 2> stretch_input_buffer{};
     std::array<s16, 2> last_frame{};
     TimeStretcher time_stretcher;
     std::unique_ptr<Sink> sink;
