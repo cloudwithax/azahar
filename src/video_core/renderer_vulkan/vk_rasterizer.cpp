@@ -145,12 +145,34 @@ void RasterizerVulkan::TickFrame() {
     // the emulation thread. With async presentation, only sync every 16 frames to let the GPU
     // pipeline stay full. The present thread handles frame pacing independently.
     if (!Settings::values.async_presentation.GetValue() || ++frames_since_worker_wait >= 16) {
-        scheduler.WaitWorker();
+        scheduler.WaitWorker(0);
         frames_since_worker_wait = 0;
     }
 #else
-    scheduler.WaitWorker();
+    scheduler.WaitWorker(0);
 #endif
+
+    // Adaptive WaitWorker interval based on GPU load
+    if (Settings::values.async_presentation.GetValue()) {
+        const s64 gpu_queue_time = this->gpu_queue_time;
+        if (gpu_queue_time > 0) {
+            constexpr s64 HIGH_GPU_LOAD = 8'000'000;
+            constexpr s64 MAX_GPU_LOAD = 20'000'000;
+            constexpr u32 MAX_INTERVAL = 32;
+
+            if (gpu_queue_time > HIGH_GPU_LOAD) {
+                u32 adaptive_interval = 8;
+                if (gpu_queue_time > MAX_GPU_LOAD) {
+                    adaptive_interval = std::min<u32>(32, 16 + (gpu_queue_time - MAX_GPU_LOAD) / 1'000'000);
+                }
+                scheduler.WaitWorker(adaptive_interval);
+            } else {
+                scheduler.WaitWorker(0);
+            }
+        } else {
+            scheduler.WaitWorker(0);
+        }
+    }
     res_cache.TickFrame();
 }
 

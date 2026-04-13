@@ -110,13 +110,13 @@ static bool IsLowRefreshRate() {
 
 RendererVulkan::RendererVulkan(Core::System& system, Pica::PicaCore& pica_,
                                Frontend::EmuWindow& window, Frontend::EmuWindow* secondary_window)
-    : RendererBase{system, window, secondary_window}, memory{system.Memory()}, pica{pica_},
-      instance{window, Settings::values.physical_device.GetValue()}, scheduler{instance},
-      renderpass_cache{instance, scheduler},
-      main_present_window{window, instance, scheduler, IsLowRefreshRate()},
-      vertex_buffer{instance, scheduler, vk::BufferUsageFlagBits::eVertexBuffer,
-                    VERTEX_BUFFER_SIZE},
-      update_queue{instance}, rasterizer{memory,
+: RendererBase{system, window, secondary_window}, memory{system.Memory()}, pica{pica_},
+       instance{window, Settings::values.physical_device.GetValue()}, scheduler{instance},
+       renderpass_cache{instance, scheduler},
+       main_present_window{window, instance, scheduler, IsLowRefreshRate(), rasterizer},
+       vertex_buffer{instance, scheduler, vk::BufferUsageFlagBits::eVertexBuffer,
+                     VERTEX_BUFFER_SIZE},
+       update_queue{instance}, rasterizer{memory,
                                          pica,
                                          system.CustomTexManager(),
                                          *this,
@@ -132,7 +132,7 @@ RendererVulkan::RendererVulkan(Core::System& system, Pica::PicaCore& pica_,
     BuildPipelines();
     if (secondary_window) {
         secondary_present_window_ptr = std::make_unique<PresentWindow>(
-            *secondary_window, instance, scheduler, IsLowRefreshRate());
+            *secondary_window, instance, scheduler, IsLowRefreshRate(), rasterizer);
     }
 }
 
@@ -1121,7 +1121,7 @@ void RendererVulkan::SwapBuffers() {
         const auto& secondary_layout = secondary_window->GetFramebufferLayout();
         if (!secondary_present_window_ptr) {
             secondary_present_window_ptr = std::make_unique<PresentWindow>(
-                *secondary_window, instance, scheduler, IsLowRefreshRate());
+                *secondary_window, instance, scheduler, IsLowRefreshRate(), rasterizer);
         }
         RenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
         secondary_window->PollEvents();
@@ -1133,7 +1133,7 @@ void RendererVulkan::SwapBuffers() {
         const auto& secondary_layout = secondary_window->GetFramebufferLayout();
         if (!secondary_present_window_ptr) {
             secondary_present_window_ptr = std::make_unique<PresentWindow>(
-                *secondary_window, instance, scheduler, IsLowRefreshRate());
+                *secondary_window, instance, scheduler, IsLowRefreshRate(), rasterizer);
         }
         RenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
         secondary_window->PollEvents();

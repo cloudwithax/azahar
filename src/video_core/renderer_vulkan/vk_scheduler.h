@@ -44,6 +44,9 @@ public:
     /// Waits for the given tick to trigger on the GPU.
     void Wait(u64 tick);
 
+    /// Dynamic WaitWorker with adaptive interval based on GPU load
+    void WaitWorker(u32 adaptive_interval = 16);
+
     /// Sends currently recorded work to the worker thread.
     void DispatchWork();
 
@@ -208,6 +211,7 @@ private:
     std::condition_variable_any event_cv;
     std::jthread worker_thread;
     bool use_worker_thread;
+    u64 last_wait_tick = 0;
 };
 
 } // namespace Vulkan

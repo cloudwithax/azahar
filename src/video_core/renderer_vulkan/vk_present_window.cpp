@@ -109,9 +109,10 @@ bool CanBlitToSwapchain(const vk::PhysicalDevice& physical_device, vk::Format fo
 } // Anonymous namespace
 
 PresentWindow::PresentWindow(Frontend::EmuWindow& emu_window_, const Instance& instance_,
-                             Scheduler& scheduler_, bool low_refresh_rate_)
+                             Scheduler& scheduler_, bool low_refresh_rate_,
+                             VideoCore::RasterizerInterface& rasterizer_)
     : emu_window{emu_window_}, instance{instance_}, scheduler{scheduler_},
-      low_refresh_rate{low_refresh_rate_},
+      low_refresh_rate{low_refresh_rate_}, rasterizer{rasterizer_},
       surface{CreateSurface(instance.GetInstance(), emu_window)}, next_surface{surface},
       swapchain{instance, emu_window.GetFramebufferLayout().width,
                 emu_window.GetFramebufferLayout().height, surface, low_refresh_rate_},
@@ -281,7 +282,7 @@ Frame* PresentWindow::GetRenderFrame() {
 
 void PresentWindow::Present(Frame* frame) {
     if (!use_present_thread) {
-        scheduler.WaitWorker();
+        scheduler.WaitWorker(0);
         CopyToSwapchain(frame);
         free_queue.push(frame);
         return;
@@ -319,6 +320,12 @@ void PresentWindow::PresentThread(std::stop_token token) {
 #else
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
 #endif
+
+    static constexpr std::size_t GPU_LOAD_HISTORY = 32;
+    std::array<std::chrono::microseconds, GPU_LOAD_HISTORY> gpu_queue_times{};
+    std::size_t gpu_load_index = 0;
+    s64 total_gpu_queue_time = 0;
+
     while (!token.stop_requested()) {
         std::unique_lock lock{queue_mutex};
 
@@ -327,6 +334,8 @@ void PresentWindow::PresentThread(std::stop_token token) {
         if (token.stop_requested()) {
             return;
         }
+
+        const auto frame_submit_time = std::chrono::steady_clock::now();
 
         // Take the frame and notify anyone waiting
         Frame* frame = present_queue.front();
@@ -340,10 +349,26 @@ void PresentWindow::PresentThread(std::stop_token token) {
 
         CopyToSwapchain(frame);
 
+        const auto frame_present_time = std::chrono::steady_clock::now();
+        const auto queue_time = std::chrono::duration_cast<std::chrono::microseconds>(
+            frame_present_time - frame_submit_time);
+
+        // Update GPU load tracking
+        static_cast<RasterizerVulkan*>(&rasterizer)->UpdateGpuQueueTime(queue_time.count());
+
         // Free the frame for reuse
         std::scoped_lock fl{free_mutex};
         free_queue.push(frame);
         free_cv.notify_one();
+
+        // Adaptive frame pacing: if GPU queue is building up, slow down present thread
+        constexpr s64 HIGH_GPU_LOAD_THRESHOLD = 8'000'000;
+        constexpr s64 MAX_GPU_LOAD_THRESHOLD = 20'000'000;
+        if (gpu_queue_time > HIGH_GPU_LOAD_THRESHOLD) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } else if (gpu_queue_time > MAX_GPU_LOAD_THRESHOLD) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
     }
 }
 
