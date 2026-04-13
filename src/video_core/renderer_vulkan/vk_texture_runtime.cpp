@@ -623,6 +623,29 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
 
 bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
                                   const VideoCore::TextureBlit& blit) {
+    const bool same_extent = blit.src_rect.GetWidth() == blit.dst_rect.GetWidth() &&
+                             blit.src_rect.GetHeight() == blit.dst_rect.GetHeight();
+    const bool src_upright = blit.src_rect.top > blit.src_rect.bottom;
+    const bool dst_upright = blit.dst_rect.top > blit.dst_rect.bottom;
+    const bool direct_copy_compatible =
+        (source.type == VideoCore::SurfaceType::Color ||
+         source.type == VideoCore::SurfaceType::Texture) &&
+        (dest.type == VideoCore::SurfaceType::Color ||
+         dest.type == VideoCore::SurfaceType::Texture) &&
+        source.pixel_format == dest.pixel_format && same_extent && src_upright && dst_upright;
+    if (direct_copy_compatible) {
+        const VideoCore::TextureCopy copy = {
+            .src_level = blit.src_level,
+            .dst_level = blit.dst_level,
+            .src_layer = blit.src_layer,
+            .dst_layer = blit.dst_layer,
+            .src_offset = {blit.src_rect.left, blit.src_rect.bottom},
+            .dst_offset = {blit.dst_rect.left, blit.dst_rect.bottom},
+            .extent = {blit.src_rect.GetWidth(), blit.src_rect.GetHeight()},
+        };
+        return CopyTextures(source, dest, copy);
+    }
+
     const bool is_depth_stencil = source.type == VideoCore::SurfaceType::DepthStencil;
     const auto& depth_traits = instance.GetTraits(source.pixel_format);
     if (is_depth_stencil && !depth_traits.blit_support) {

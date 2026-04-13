@@ -502,7 +502,8 @@ void PresentWindow::CopyToSwapchain(Frame* frame) {
                            vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
                            {}, {}, pre_barriers);
 
-    if (blit_supported) {
+    const bool needs_scaling = frame->width != extent.width || frame->height != extent.height;
+    if (blit_supported && needs_scaling) {
         cmdbuf.blitImage(frame->image, vk::ImageLayout::eTransferSrcOptimal, swapchain_image,
                          vk::ImageLayout::eTransferDstOptimal,
                          MakeImageBlit(frame->width, frame->height, extent.width, extent.height),

@@ -1325,6 +1325,30 @@ void RasterizerCache<T>::InvalidateRegion(PAddr addr, u32 size, SurfaceId region
         ASSERT(addr >= region_owner.addr && addr + size <= region_owner.end);
         ASSERT(region_owner.width == region_owner.stride);
         region_owner.MarkValid(invalid_interval);
+
+        bool has_overlapping_alias = false;
+        ForEachPage(addr, size, [this, addr, size, region_owner_id, &has_overlapping_alias](
+                                    u64 page) {
+            const auto page_it = page_table.find(page);
+            if (page_it == page_table.end()) {
+                return false;
+            }
+            for (const SurfaceId surface_id : page_it->second) {
+                if (surface_id == region_owner_id) {
+                    continue;
+                }
+                if (!slot_surfaces[surface_id].Overlaps(addr, size)) {
+                    continue;
+                }
+                has_overlapping_alias = true;
+                return true;
+            }
+            return false;
+        });
+        if (!has_overlapping_alias) {
+            dirty_regions.set({invalid_interval, region_owner_id});
+            return;
+        }
     }
 
     boost::container::small_vector<SurfaceId, 4> remove_surfaces;
