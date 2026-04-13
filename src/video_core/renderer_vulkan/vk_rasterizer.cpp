@@ -140,7 +140,14 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 RasterizerVulkan::~RasterizerVulkan() = default;
 
 void RasterizerVulkan::TickFrame() {
+#ifdef ANDROID
+    if (!Settings::values.async_presentation.GetValue() || ++frames_since_worker_wait >= 4) {
+        scheduler.WaitWorker();
+        frames_since_worker_wait = 0;
+    }
+#else
     scheduler.WaitWorker();
+#endif
     res_cache.TickFrame();
 }
 

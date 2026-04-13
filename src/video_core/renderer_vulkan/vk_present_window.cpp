@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include "common/microprofile.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -95,6 +96,15 @@ bool CanBlitToSwapchain(const vk::PhysicalDevice& physical_device, vk::Format fo
     };
 }
 
+[[nodiscard]] u32 RenderFrameCount(u32 swapchain_images) {
+#ifdef ANDROID
+    if (Settings::values.async_presentation.GetValue()) {
+        return std::clamp(swapchain_images * 2, 6u, 8u);
+    }
+#endif
+    return swapchain_images;
+}
+
 } // Anonymous namespace
 
 PresentWindow::PresentWindow(Frontend::EmuWindow& emu_window_, const Instance& instance_,
@@ -112,6 +122,7 @@ PresentWindow::PresentWindow(Frontend::EmuWindow& emu_window_, const Instance& i
       last_render_surface{emu_window.GetWindowInfo().render_surface} {
 
     const u32 num_images = swapchain.GetImageCount();
+    const u32 frame_count = RenderFrameCount(num_images);
     const vk::Device device = instance.GetDevice();
 
     const vk::CommandPoolCreateInfo pool_info = {
@@ -124,12 +135,12 @@ PresentWindow::PresentWindow(Frontend::EmuWindow& emu_window_, const Instance& i
     const vk::CommandBufferAllocateInfo alloc_info = {
         .commandPool = command_pool,
         .level = vk::CommandBufferLevel::ePrimary,
-        .commandBufferCount = num_images,
+        .commandBufferCount = frame_count,
     };
     const std::vector command_buffers = device.allocateCommandBuffers(alloc_info);
 
-    swap_chain.resize(num_images);
-    for (u32 i = 0; i < num_images; i++) {
+    swap_chain.resize(frame_count);
+    for (u32 i = 0; i < frame_count; i++) {
         Frame& frame = swap_chain[i];
         frame.cmdbuf = command_buffers[i];
         frame.render_ready = device.createSemaphore({});
@@ -138,7 +149,7 @@ PresentWindow::PresentWindow(Frontend::EmuWindow& emu_window_, const Instance& i
     }
 
     if (instance.HasDebuggingToolAttached()) {
-        for (u32 i = 0; i < num_images; ++i) {
+        for (u32 i = 0; i < frame_count; ++i) {
             SetObjectName(device, swap_chain[i].cmdbuf, "Swapchain Command Buffer {}", i);
             SetObjectName(device, swap_chain[i].render_ready,
                           "Swapchain Semaphore: render_ready {}", i);
@@ -309,7 +320,11 @@ void PresentWindow::WaitPresent() {
 
 void PresentWindow::PresentThread(std::stop_token token) {
     Common::SetCurrentThreadName("VulkanPresent");
+#ifdef ANDROID
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+#else
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
+#endif
     while (!token.stop_requested()) {
         std::unique_lock lock{queue_mutex};
 

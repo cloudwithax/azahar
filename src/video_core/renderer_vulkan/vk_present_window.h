@@ -63,6 +63,10 @@ public:
         return swapchain.GetImageCount();
     }
 
+    u32 FrameCount() const noexcept {
+        return static_cast<u32>(swap_chain.size());
+    }
+
 private:
     void PresentThread(std::stop_token token);
 

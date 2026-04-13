@@ -141,6 +141,7 @@ private:
     u32 uniform_size_aligned_vs;
     u32 uniform_size_aligned_fs;
     bool async_shaders{false};
+    u32 frames_since_worker_wait{};
 };
 
 } // namespace Vulkan
