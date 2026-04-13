@@ -143,6 +143,7 @@ option(ENABLE_BUILTIN_KEYBLOB "Enable the inclusion of the default crypto keys b
 CMAKE_DEPENDENT_OPTION(COMPILE_WITH_DWARF "Add DWARF debugging information" ${IS_DEBUG_BUILD} "MINGW" OFF)
 option(ENABLE_LTO "Enable link time optimization" ${DEFAULT_ENABLE_LTO})
 option(ENABLE_NATIVE_OPTIMIZATION "Enables processor-specific optimizations via -march=native" OFF)
+set(AZAHAR_TARGET_CPU "" CACHE STRING "Target a specific ARM CPU (e.g. cortex-a55, cortex-a76) for optimized builds")
 option(CITRA_USE_PRECOMPILED_HEADERS "Use precompiled headers" ON)
 option(CITRA_WARNINGS_AS_ERRORS "Enable warnings as errors" ON)
 
@@ -250,6 +251,25 @@ if (ENABLE_NATIVE_OPTIMIZATION)
     if (CXX_COMPILER_SUPPORTS_MARCH_NATIVE)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
     endif()
+endif()
+
+# Target a specific ARM CPU for optimized builds (e.g. -DAZAHAR_TARGET_CPU=cortex-a55)
+# =======================================================================
+if (AZAHAR_TARGET_CPU)
+    include(CheckCCompilerFlag)
+    include(CheckCXXCompilerFlag)
+    set(_MCPU_FLAG "-mcpu=${AZAHAR_TARGET_CPU}")
+    CHECK_C_COMPILER_FLAG("${_MCPU_FLAG}" C_COMPILER_SUPPORTS_MCPU)
+    CHECK_CXX_COMPILER_FLAG("${_MCPU_FLAG}" CXX_COMPILER_SUPPORTS_MCPU)
+
+    if (C_COMPILER_SUPPORTS_MCPU AND CXX_COMPILER_SUPPORTS_MCPU)
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${_MCPU_FLAG}")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${_MCPU_FLAG}")
+        message(STATUS "Targeting CPU: ${AZAHAR_TARGET_CPU}")
+    else()
+        message(WARNING "Compiler does not support -mcpu=${AZAHAR_TARGET_CPU}, ignoring")
+    endif()
+    unset(_MCPU_FLAG)
 endif()
 
 # Sanity check : Check that all submodules are present
