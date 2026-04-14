@@ -148,9 +148,13 @@ void PipelineCache::BuildLayout() {
 }
 
 PipelineCache::~PipelineCache() {
+    WaitForBackgroundCompilation();
+    SaveDriverPipelineDiskCache();
+}
+
+void PipelineCache::WaitForBackgroundCompilation() {
     pipeline_workers.WaitForRequests();
     shader_workers.WaitForRequests();
-    SaveDriverPipelineDiskCache();
 }
 
 void PipelineCache::LoadCache(const std::atomic_bool& stop_loading,
@@ -167,6 +171,14 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
                   title_id);
         return;
     }
+
+    // Cache-owned Shader and GraphicsPipeline objects are referenced by background workers.
+    // Drain them before replacing any per-title Vulkan cache state.
+    WaitForBackgroundCompilation();
+    current_pipeline = nullptr;
+    current_shaders.fill(nullptr);
+    shader_hashes.fill(0);
+    current_info = {};
 
     // Make sure we have a valid pipeline cache before switching
     if (!driver_pipeline_cache) {
@@ -300,7 +312,11 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
 
 void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
                                   const VideoCore::DiskResourceLoadCallback& callback) {
-
+    WaitForBackgroundCompilation();
+    current_pipeline = nullptr;
+    current_shaders.fill(nullptr);
+    shader_hashes.fill(0);
+    current_info = {};
     disk_caches.clear();
     curr_disk_cache =
         disk_caches.emplace_back(std::make_shared<ShaderDiskCache>(*this, GetProgramID()));
@@ -369,12 +385,18 @@ void PipelineCache::SwitchDiskCache(u64 title_id, const std::atomic_bool& stop_l
 bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     MICROPROFILE_SCOPE(Vulkan_Bind);
 
+    if (!curr_disk_cache) {
+        LOG_ERROR(Render_Vulkan, "Cannot bind pipeline without an active disk shader cache");
+        return false;
+    }
+
     for (u32 i = 0; i < MAX_SHADER_STAGES; i++) {
         info.state.shader_ids[i] = shader_hashes[i];
     }
 
     GraphicsPipeline* const pipeline = curr_disk_cache->GetPipeline(info);
-    if (!pipeline->IsDone() && !pipeline->TryBuild(wait_built)) {
+    if ((!pipeline->IsDone() && !pipeline->TryBuild(wait_built)) || pipeline->HasFailed() ||
+        !pipeline->HasHandle()) {
         return false;
     }
 
@@ -575,6 +597,10 @@ ExtraVSConfig PipelineCache::CalcExtraConfig(const PicaVSConfig& config) {
 bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
                                                 Pica::ShaderSetup& setup,
                                                 const VertexLayout& layout) {
+    if (!curr_disk_cache) {
+        LOG_ERROR(Render_Vulkan, "Cannot build programmable vertex shader without an active cache");
+        return false;
+    }
 
     auto res = curr_disk_cache->UseProgrammableVertexShader(regs, setup, layout);
 
@@ -593,6 +619,10 @@ void PipelineCache::UseTrivialVertexShader() {
 }
 
 bool PipelineCache::UseFixedGeometryShader(const Pica::RegsInternal& regs) {
+    if (!curr_disk_cache) {
+        LOG_ERROR(Render_Vulkan, "Cannot build geometry shader without an active cache");
+        return false;
+    }
 
     auto res = curr_disk_cache->UseFixedGeometryShader(regs);
 
@@ -612,6 +642,10 @@ void PipelineCache::UseTrivialGeometryShader() {
 
 void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
                                       const Pica::Shader::UserConfig& user) {
+    if (!curr_disk_cache) {
+        LOG_ERROR(Render_Vulkan, "Cannot build fragment shader without an active cache");
+        return;
+    }
 
     auto res = curr_disk_cache->UseFragmentShader(regs, user);
 

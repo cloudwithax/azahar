@@ -104,6 +104,8 @@ public:
 private:
     friend ShaderDiskCache;
 
+    void WaitForBackgroundCompilation();
+
     /// Loads the driver pipeline cache
     void LoadDriverPipelineDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},
                                      const VideoCore::DiskResourceLoadCallback& callback = {});

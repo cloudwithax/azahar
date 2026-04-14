@@ -70,6 +70,9 @@ public:
     }
 
 private:
+    std::size_t GetUploadBudgetForCurrentFrame() const;
+    bool ShouldDeferNewDecode() const;
+
     /// Parses the custom texture filename (hash, material type, etc).
     bool ParseFilename(const FileUtil::FSTEntry& file, CustomTexture* texture);
 

@@ -25,6 +25,9 @@ public:
 private:
     bool enabled = true;
     bool enable_for_frame = true;
+    bool adaptive_disable_active = false;
+    u32 overload_streak = 0;
+    u32 recovery_streak = 0;
 
     bool top_screen_drawn = false;
     bool top_screen_transfered = false;

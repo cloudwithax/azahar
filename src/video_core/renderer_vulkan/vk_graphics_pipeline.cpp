@@ -82,6 +82,10 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
 GraphicsPipeline::~GraphicsPipeline() = default;
 
 bool GraphicsPipeline::TryBuild(bool wait_built) {
+    if (HasFailed()) {
+        return false;
+    }
+
     // The pipeline is currently being compiled. We can either wait for it
     // or skip the draw.
     if (is_pending) {
@@ -92,6 +96,15 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
     const bool shaders_pending = std::any_of(
         stages.begin(), stages.end(), [](Shader* shader) { return shader && !shader->IsDone(); });
     if (!wait_built && shaders_pending) {
+        return false;
+    }
+
+    const bool shader_failed = std::any_of(stages.begin(), stages.end(), [](Shader* shader) {
+        return shader && shader->IsDone() && !shader->HasValidModule();
+    });
+    if (shader_failed) {
+        failed.store(true, std::memory_order_relaxed);
+        MarkDone();
         return false;
     }
 
@@ -255,6 +268,12 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         }
 
         shader->WaitDone();
+        if (!shader->HasValidModule()) {
+            LOG_ERROR(Render_Vulkan, "Skipping graphics pipeline build due to invalid shader module");
+            failed.store(true, std::memory_order_relaxed);
+            MarkDone();
+            return false;
+        }
         shader_stages[shader_count++] = vk::PipelineShaderStageCreateInfo{
             .stage = MakeShaderStage(i),
             .module = shader->Handle(),
@@ -288,7 +307,10 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     } else if (result.result == vk::Result::eErrorPipelineCompileRequiredEXT) {
         return false;
     } else {
-        UNREACHABLE_MSG("Graphics pipeline creation failed!");
+        LOG_ERROR(Render_Vulkan, "Graphics pipeline creation failed: {}", vk::to_string(result.result));
+        failed.store(true, std::memory_order_relaxed);
+        MarkDone();
+        return false;
     }
 
     MarkDone();

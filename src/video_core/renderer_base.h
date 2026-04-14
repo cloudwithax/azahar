@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "common/settings.h"
 #include "common/common_types.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "video_core/rasterizer_interface.h"
@@ -112,6 +113,14 @@ public:
                            const Layout::FramebufferLayout& layout);
 
 protected:
+    void UpdateAdaptiveResolutionScale();
+    u32 GetRequestedResolutionScaleFactor() const;
+    void ResetAdaptivePerformanceControls();
+    void UpdateAdaptiveQualityControls(double frame_scale, u32 requested_scale,
+                                       u32 effective_scale);
+    u32 GetAdaptiveQualityMaxLevel() const;
+    void ApplyAdaptiveQualityLevel(u32 level);
+
     Core::System& system;
     RendererSettings settings;
     Frontend::EmuWindow& render_window;    /// Reference to the render window handle.
@@ -120,6 +129,16 @@ protected:
 protected:
     f32 current_fps = 0.0f; /// Current framerate, should be set by the renderer
     s32 current_frame = 0;  /// Current frame, should be set by the renderer
+    u32 adaptive_resolution_cap = 0;
+    u32 last_effective_resolution_scale = 0;
+    u32 slow_frame_streak = 0;
+    u32 fast_frame_streak = 0;
+    u32 adaptive_quality_level = 0;
+    u32 adaptive_quality_slow_streak = 0;
+    u32 adaptive_quality_fast_streak = 0;
+    bool adaptive_requested_shaders_accurate_mul = false;
+    bool adaptive_requested_custom_textures = false;
+    Settings::TextureFilter adaptive_requested_texture_filter = Settings::TextureFilter::NoFilter;
 };
 
 } // namespace VideoCore

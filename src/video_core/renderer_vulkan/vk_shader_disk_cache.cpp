@@ -125,9 +125,19 @@ std::optional<std::pair<u64, Shader* const>> ShaderDiskCache::UseProgrammableVer
             const vk::Device device = parent.instance.GetDevice();
             parent.shader_workers.QueueWork([device, &shader, this, spirv_id] {
                 auto spirv = CompileGLSL(shader.program, vk::ShaderStageFlagBits::eVertex);
-                AppendVSSPIRV(vs_cache, spirv, spirv_id);
                 shader.program.clear();
+                if (spirv.empty()) {
+                    LOG_ERROR(Render_Vulkan, "Failed to compile vertex shader GLSL to SPIR-V");
+                    shader.MarkDone();
+                    return;
+                }
                 shader.module = CompileSPV(spirv, device);
+                if (!shader.module) {
+                    LOG_ERROR(Render_Vulkan, "Failed to create Vulkan vertex shader module");
+                    shader.MarkDone();
+                    return;
+                }
+                AppendVSSPIRV(vs_cache, spirv, spirv_id);
                 shader.MarkDone();
             });
         }
@@ -162,12 +172,21 @@ std::optional<std::pair<u64, Shader* const>> ShaderDiskCache::UseFragmentShader(
             const bool use_spirv = parent.profile.vk_use_spirv_generator;
             if (use_spirv && !fs_config.UsesSpirvIncompatibleConfig()) {
                 spirv = SPIRV::GenerateFragmentShader(fs_config, parent.profile);
-                shader.module = CompileSPV(spirv, parent.instance.GetDevice());
             } else {
                 const std::string code =
                     GLSL::GenerateFragmentShader(fs_config, user, parent.profile);
                 spirv = CompileGLSL(code, vk::ShaderStageFlagBits::eFragment);
-                shader.module = CompileSPV(spirv, parent.instance.GetDevice());
+            }
+            if (spirv.empty()) {
+                LOG_ERROR(Render_Vulkan, "Failed to generate fragment shader SPIR-V");
+                shader.MarkDone();
+                return;
+            }
+            shader.module = CompileSPV(spirv, parent.instance.GetDevice());
+            if (!shader.module) {
+                LOG_ERROR(Render_Vulkan, "Failed to create Vulkan fragment shader module");
+                shader.MarkDone();
+                return;
             }
             shader.MarkDone();
 
@@ -219,7 +238,17 @@ std::optional<std::pair<u64, Shader* const>> ShaderDiskCache::UseFixedGeometrySh
 
                 const auto code = GLSL::GenerateFixedGeometryShader(gs_config, extra);
                 const auto spirv = CompileGLSL(code, vk::ShaderStageFlagBits::eGeometry);
+                if (spirv.empty()) {
+                    LOG_ERROR(Render_Vulkan, "Failed to generate geometry shader SPIR-V");
+                    shader.MarkDone();
+                    return;
+                }
                 shader.module = CompileSPV(spirv, parent.instance.GetDevice());
+                if (!shader.module) {
+                    LOG_ERROR(Render_Vulkan, "Failed to create Vulkan geometry shader module");
+                    shader.MarkDone();
+                    return;
+                }
                 shader.MarkDone();
 
                 AppendGSSPIRV(gs_cache, spirv, gs_config_hash);
