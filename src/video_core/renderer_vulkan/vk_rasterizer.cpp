@@ -153,9 +153,11 @@ void RasterizerVulkan::TickFrame() {
     scheduler.WaitWorker(0);
 #endif
     res_cache.TickFrame();
-    // Invalidate texture descriptor cache — descriptor sets may be recycled after frame boundary
+    // Invalidate caches — descriptor sets may be recycled after frame boundary
     texture_descriptors_valid = false;
     vertex_descriptors_valid = false;
+    last_index_buffer_offset = ~0u;
+    last_index_buffer_type = vk::IndexType::eNoneKHR;
 }
 
 void RasterizerVulkan::LoadDefaultDiskResources(
@@ -532,10 +534,16 @@ void RasterizerVulkan::SetupIndexArray() {
 
     stream_buffer.Commit(index_buffer_size);
 
-    scheduler.Record(
-        [this, index_offset = index_offset, index_type = index_type](vk::CommandBuffer cmdbuf) {
-            cmdbuf.bindIndexBuffer(stream_buffer.Handle(), index_offset, index_type);
-        });
+    // Skip redundant index buffer rebinds — back-to-back indexed draws with
+    // the same offset and type (common in MK7 track geometry) save a command.
+    if (index_offset != last_index_buffer_offset || index_type != last_index_buffer_type) {
+        last_index_buffer_offset = index_offset;
+        last_index_buffer_type = index_type;
+        scheduler.Record(
+            [this, index_offset = index_offset, index_type = index_type](vk::CommandBuffer cmdbuf) {
+                cmdbuf.bindIndexBuffer(stream_buffer.Handle(), index_offset, index_type);
+            });
+    }
 }
 
 void RasterizerVulkan::DrawTriangles() {

@@ -198,10 +198,32 @@ void RendererVulkan::PrepareRendertarget() {
 
 void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout) {
     const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
-    const auto present_set = present_heap.Commit();
-    for (u32 index = 0; index < screen_infos.size(); index++) {
-        update_queue.AddImageSampler(present_set, 0, index, screen_infos[index].image_view,
-                                     sampler);
+
+    // Check if the screen image views or sampler changed since the last frame.
+    // If nothing changed, reuse the cached descriptor set to avoid a per-frame
+    // descriptor allocation and 3 vkUpdateDescriptorSets writes.
+    bool present_descriptors_dirty = !cached_present_set || (sampler != cached_present_sampler);
+    if (!present_descriptors_dirty) {
+        for (u32 index = 0; index < screen_infos.size(); index++) {
+            if (screen_infos[index].image_view != cached_present_views[index]) {
+                present_descriptors_dirty = true;
+                break;
+            }
+        }
+    }
+
+    vk::DescriptorSet present_set;
+    if (present_descriptors_dirty) {
+        present_set = present_heap.Commit();
+        for (u32 index = 0; index < screen_infos.size(); index++) {
+            update_queue.AddImageSampler(present_set, 0, index, screen_infos[index].image_view,
+                                         sampler);
+            cached_present_views[index] = screen_infos[index].image_view;
+        }
+        cached_present_sampler = sampler;
+        cached_present_set = present_set;
+    } else {
+        present_set = cached_present_set;
     }
 
     renderpass_cache.EndRendering();
@@ -252,11 +274,6 @@ void RendererVulkan::RenderToFrame(PresentWindow& window, Frame* frame,
         scheduler.Finish();
         window.RecreateFrame(frame, layout.width, layout.height);
     }
-
-    clear_color.float32[0] = Settings::values.bg_red.GetValue();
-    clear_color.float32[1] = Settings::values.bg_green.GetValue();
-    clear_color.float32[2] = Settings::values.bg_blue.GetValue();
-    clear_color.float32[3] = 1.0f;
 
     DrawScreens(frame, layout, flipped);
     scheduler.Flush(frame->render_ready);

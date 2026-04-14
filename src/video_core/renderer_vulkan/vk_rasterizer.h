@@ -149,6 +149,11 @@ private:
     u32 frames_since_worker_wait{};
     s64 gpu_queue_time = 0;
 
+    /// Index buffer dirty tracking: skip redundant bindIndexBuffer calls when
+    /// consecutive indexed draws use the same offset and type.
+    u32 last_index_buffer_offset{~0u};
+    vk::IndexType last_index_buffer_type{vk::IndexType::eNoneKHR};
+
     /// Texture unit dirty tracking: hash of PICA texture register state from the previous
     /// draw call. When the hash matches, we can reuse the existing texture descriptor set
     /// instead of allocating a new one and writing 3 image sampler descriptors.

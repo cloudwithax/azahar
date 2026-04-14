@@ -153,6 +153,11 @@ private:
     PresentUniformData draw_info{};
     vk::ClearColorValue clear_color{};
 
+    /// Cached present descriptor set to avoid per-frame allocation when views don't change.
+    vk::DescriptorSet cached_present_set{};
+    vk::Sampler cached_present_sampler{};
+    std::array<vk::ImageView, 3> cached_present_views{};
+
     vk::ShaderModule cursor_vertex_shader{};
     vk::ShaderModule cursor_fragment_shader{};
     vk::Pipeline cursor_pipeline{};

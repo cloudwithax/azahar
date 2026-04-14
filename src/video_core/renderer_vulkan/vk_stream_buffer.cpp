@@ -275,11 +275,18 @@ void StreamBuffer::WaitPendingOperations(u64 requested_upper_bound) {
     if (!invalidation_mark) {
         return;
     }
+    // Find the highest tick among all watches that overlap the requested range,
+    // then issue a single wait. This avoids multiple vkWaitSemaphores calls
+    // when many small commits span the region we need to reclaim.
+    u64 max_tick = 0;
     while (requested_upper_bound > wait_bound && wait_cursor < *invalidation_mark) {
         auto& watch = previous_watches[wait_cursor];
         wait_bound = watch.upper_bound;
-        scheduler.Wait(watch.tick);
+        max_tick = std::max(max_tick, watch.tick);
         ++wait_cursor;
+    }
+    if (max_tick > 0) {
+        scheduler.Wait(max_tick);
     }
 }
 

@@ -75,34 +75,34 @@ void RenderManager::EndRendering() {
         return;
     }
 
+    // The subpass dependencies declared in CreateRenderPass handle the
+    // execution and memory dependencies between render passes. For non-shadow
+    // rendering the driver uses these to pipeline passes without explicit
+    // barriers. Shadow rendering uses storage image writes (eShaderWrite) which
+    // the subpass dependencies don't cover, so we still emit an explicit barrier
+    // in that case.
     scheduler.Record([images = images, aspects = aspects,
                       shadow_rendering = shadow_rendering](vk::CommandBuffer cmdbuf) {
+        cmdbuf.endRenderPass();
+
+        if (!shadow_rendering) {
+            return;
+        }
+
+        // Shadow rendering writes via storage images in the fragment shader,
+        // which is outside the subpass dependency's access scope. Emit an
+        // explicit barrier for the shader write → shader read transition.
         u32 num_barriers = 0;
-        vk::PipelineStageFlags pipeline_flags{};
-        vk::AccessFlags src_access_flags{};
         std::array<vk::ImageMemoryBarrier, 2> barriers;
         for (u32 i = 0; i < images.size(); i++) {
             if (!images[i]) {
                 continue;
             }
-            const bool is_color = static_cast<bool>(aspects[i] & vk::ImageAspectFlagBits::eColor);
-            if (is_color) {
-                pipeline_flags |= shadow_rendering
-                                      ? vk::PipelineStageFlagBits::eFragmentShader
-                                      : vk::PipelineStageFlagBits::eColorAttachmentOutput;
-                src_access_flags = shadow_rendering ? vk::AccessFlagBits::eShaderWrite
-                                                    : vk::AccessFlagBits::eColorAttachmentWrite;
-            } else {
-                pipeline_flags |= vk::PipelineStageFlagBits::eEarlyFragmentTests |
-                                  vk::PipelineStageFlagBits::eLateFragmentTests;
-                src_access_flags = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+            if (!(aspects[i] & vk::ImageAspectFlagBits::eColor)) {
+                continue;
             }
-            // Transition from optimal attachment layout to eGeneral for subsequent
-            // shader reads / transfer operations. The render pass finalLayout handles
-            // the attachment→general transition, so the barrier only needs to
-            // establish the access dependency with a narrow dst scope.
             barriers[num_barriers++] = vk::ImageMemoryBarrier{
-                .srcAccessMask = src_access_flags,
+                .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
                 .dstAccessMask = vk::AccessFlagBits::eShaderRead,
                 .oldLayout = vk::ImageLayout::eGeneral,
                 .newLayout = vk::ImageLayout::eGeneral,
@@ -118,14 +118,12 @@ void RenderManager::EndRendering() {
                 },
             };
         }
-        cmdbuf.endRenderPass();
-        if (num_barriers == 0) {
-            return;
+        if (num_barriers > 0) {
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader,
+                                   vk::PipelineStageFlagBits::eFragmentShader,
+                                   vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr,
+                                   num_barriers, barriers.data());
         }
-        cmdbuf.pipelineBarrier(pipeline_flags,
-                               vk::PipelineStageFlagBits::eFragmentShader,
-                               vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr,
-                               num_barriers, barriers.data());
     });
 
     // Reset state.
@@ -231,13 +229,62 @@ vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Forma
         .pDepthStencilAttachment = use_depth ? &depth_attachment_ref : nullptr,
     };
 
+    // Declare explicit subpass dependencies so the driver can pipeline render
+    // passes back-to-back without inserting implicit full-pipeline stalls.
+    // On tile-based GPUs (Mali G52) this is critical — without these, the driver
+    // must conservatively assume a full dependency between every pair of passes.
+    std::array<vk::SubpassDependency, 2> dependencies;
+    u32 dependency_count = 0;
+
+    // External → subpass 0: wait for previous pass's writes to complete before
+    // we start reading/writing attachments.
+    dependencies[dependency_count++] = vk::SubpassDependency{
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                        vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                        vk::PipelineStageFlagBits::eLateFragmentTests,
+        .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                        vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                        vk::PipelineStageFlagBits::eLateFragmentTests,
+        .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                         vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
+                         vk::AccessFlagBits::eColorAttachmentWrite |
+                         vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                         vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        .dependencyFlags = vk::DependencyFlagBits::eByRegion,
+    };
+
+    // Subpass 0 → external: make our writes visible to subsequent shader reads
+    // and attachment operations.
+    dependencies[dependency_count++] = vk::SubpassDependency{
+        .srcSubpass = 0,
+        .dstSubpass = VK_SUBPASS_EXTERNAL,
+        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                        vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                        vk::PipelineStageFlagBits::eLateFragmentTests,
+        .dstStageMask = vk::PipelineStageFlagBits::eFragmentShader |
+                        vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                        vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                        vk::PipelineStageFlagBits::eLateFragmentTests,
+        .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                         vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        .dstAccessMask = vk::AccessFlagBits::eShaderRead |
+                         vk::AccessFlagBits::eColorAttachmentRead |
+                         vk::AccessFlagBits::eColorAttachmentWrite |
+                         vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                         vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        .dependencyFlags = vk::DependencyFlagBits::eByRegion,
+    };
+
     const vk::RenderPassCreateInfo renderpass_info = {
         .attachmentCount = attachment_count,
         .pAttachments = attachments.data(),
         .subpassCount = 1,
         .pSubpasses = &subpass,
-        .dependencyCount = 0,
-        .pDependencies = nullptr,
+        .dependencyCount = dependency_count,
+        .pDependencies = dependencies.data(),
     };
 
     return instance.GetDevice().createRenderPassUnique(renderpass_info);
