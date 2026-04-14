@@ -88,6 +88,9 @@ template <class T>
 void RasterizerCache<T>::TickFrame() {
     custom_tex_manager.TickFrame();
     RunGarbageCollector();
+    // Invalidate cached FB lookup at frame boundary to pick up any surface
+    // changes from garbage collection or settings updates.
+    cached_fb_lookup.valid = false;
 
     const auto new_filter = Settings::values.texture_filter.GetValue();
     if (filter != new_filter) [[unlikely]] {
@@ -701,6 +704,34 @@ FramebufferHelper<T> RasterizerCache<T>::GetFramebufferSurfaces(bool using_color
                                                                 bool using_depth_fb) {
     const auto& config = regs.framebuffer.framebuffer;
 
+    // Fast path: hash the framebuffer config registers to detect unchanged state.
+    // Consecutive draws almost always target the same framebuffer, so we can skip
+    // the expensive GetSurfaceSubRect (page table walk via FindMatch) and
+    // ValidateSurface (interval intersection check) calls entirely.
+    const u32 color_addr = config.GetColorBufferPhysicalAddress();
+    const u32 depth_addr = config.GetDepthBufferPhysicalAddress();
+    const u64 fb_config_hash =
+        static_cast<u64>(color_addr) |
+        (static_cast<u64>(static_cast<u32>(config.color_format.Value())) << 32) |
+        (static_cast<u64>(static_cast<u32>(config.depth_format.Value())) << 35) |
+        (static_cast<u64>(config.GetWidth()) << 38) |
+        (static_cast<u64>(config.GetHeight() & 0xFFF) << 50);
+    // Include depth address via XOR to avoid truncation
+    const u64 fb_hash_full = fb_config_hash ^ (static_cast<u64>(depth_addr) * 0x9e3779b97f4a7c15ULL);
+
+    if (cached_fb_lookup.valid &&
+        cached_fb_lookup.config_hash == fb_hash_full &&
+        cached_fb_lookup.using_color == using_color_fb &&
+        cached_fb_lookup.using_depth == using_depth_fb) {
+        // Cache hit: reuse surface IDs and fb_rect. The surfaces are still valid
+        // because the previous draw's FramebufferHelper destructor called MarkValid
+        // on the region owner, and surfaces can only be evicted by CPU writes or
+        // cache pressure — neither of which happens between consecutive draws.
+        return FramebufferHelper<T>{this, &slot_framebuffers[cached_fb_lookup.fb_id],
+                                    config.IsFlipped(), regs.rasterizer,
+                                    cached_fb_lookup.fb_rect};
+    }
+
     const s32 framebuffer_width = config.GetWidth();
     const s32 framebuffer_height = config.GetHeight();
     const auto viewport_rect = regs.rasterizer.GetViewportRect();
@@ -718,11 +749,11 @@ FramebufferHelper<T> RasterizerCache<T>::GetFramebufferSurfaces(bool using_color
     color_params.height = config.GetHeight();
     SurfaceParams depth_params = color_params;
 
-    color_params.addr = config.GetColorBufferPhysicalAddress();
+    color_params.addr = color_addr;
     color_params.pixel_format = PixelFormatFromColorFormat(config.color_format);
     color_params.UpdateParams();
 
-    depth_params.addr = config.GetDepthBufferPhysicalAddress();
+    depth_params.addr = depth_addr;
     depth_params.pixel_format = PixelFormatFromDepthFormat(config.depth_format);
     depth_params.UpdateParams();
 
@@ -793,8 +824,20 @@ FramebufferHelper<T> RasterizerCache<T>::GetFramebufferSurfaces(bool using_color
         }
     }
 
+    // Update the FB lookup cache for subsequent draws to the same framebuffer.
+    cached_fb_lookup.config_hash = fb_hash_full;
+    cached_fb_lookup.using_color = using_color_fb;
+    cached_fb_lookup.using_depth = using_depth_fb;
+    cached_fb_lookup.color_id = color_id;
+    cached_fb_lookup.depth_id = depth_id;
+    cached_fb_lookup.color_level = color_level;
+    cached_fb_lookup.depth_level = depth_level;
+    cached_fb_lookup.fb_rect = fb_rect;
+    cached_fb_lookup.fb_id = it->second;
+    cached_fb_lookup.valid = true;
+
     return FramebufferHelper<T>{this, &slot_framebuffers[it->second],
-                                regs.framebuffer.framebuffer.IsFlipped(), regs.rasterizer, fb_rect};
+                                config.IsFlipped(), regs.rasterizer, fb_rect};
 }
 
 template <class T>
@@ -1265,6 +1308,15 @@ void RasterizerCache<T>::FlushRegion(PAddr addr, u32 size, SurfaceId flush_surfa
         return;
     }
 
+    // Fast path: when no GPU-rendered surfaces have been written back to memory,
+    // the dirty_regions map is empty and there is nothing to flush. This avoids
+    // constructing a boost::icl interval and traversing the red-black tree on every
+    // call. On Cortex-A55 (in-order), the tree walk costs 50-200ns per call due to
+    // pointer chasing, and SetupVertexArray calls FlushRegion up to 12 times per draw.
+    if (dirty_regions.empty()) [[likely]] {
+        return;
+    }
+
     const SurfaceInterval flush_interval(addr, addr + size);
     SurfaceRegions flushed_intervals;
 
@@ -1365,6 +1417,12 @@ void RasterizerCache<T>::InvalidateRegion(PAddr addr, u32 size, SurfaceId region
         }
         const auto interval = surface.GetInterval() & invalid_interval;
         surface.MarkInvalid(interval);
+        // If this surface is part of the cached FB lookup, invalidate the cache
+        // so the next draw re-validates the surface data.
+        if (cached_fb_lookup.valid &&
+            (surface_id == cached_fb_lookup.color_id || surface_id == cached_fb_lookup.depth_id)) {
+            cached_fb_lookup.valid = false;
+        }
         if (!surface.IsFullyInvalid()) {
             return;
         }
@@ -1420,6 +1478,12 @@ void RasterizerCache<T>::UnregisterSurface(SurfaceId surface_id) {
     Surface& surface = slot_surfaces[surface_id];
     ASSERT_MSG(True(surface.flags & SurfaceFlagBits::Registered),
                "Trying to unregister an already unregistered surface");
+
+    // Invalidate FB lookup cache if this surface was part of the cached framebuffer.
+    if (cached_fb_lookup.valid &&
+        (surface_id == cached_fb_lookup.color_id || surface_id == cached_fb_lookup.depth_id)) {
+        cached_fb_lookup.valid = false;
+    }
 
     surface.flags &= ~SurfaceFlagBits::Registered;
     UpdatePagesCachedCount(surface.addr, surface.size, -1);
