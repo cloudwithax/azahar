@@ -232,6 +232,23 @@ private:
     Settings::TextureFilter filter;
     bool dump_textures;
     bool use_custom_textures;
+
+    /// Cached framebuffer lookup: skip GetSurfaceSubRect + ValidateSurface when the
+    /// PICA framebuffer config registers haven't changed between consecutive draws.
+    /// On Cortex-A55, GetSurfaceSubRect does page table walks via FindMatch which
+    /// involves hash map lookups and surface iteration — expensive on in-order CPUs.
+    struct CachedFBLookup {
+        u64 config_hash{};
+        bool using_color{};
+        bool using_depth{};
+        SurfaceId color_id{};
+        SurfaceId depth_id{};
+        u32 color_level{};
+        u32 depth_level{};
+        Common::Rectangle<u32> fb_rect{};
+        FramebufferId fb_id{};
+        bool valid{false};
+    } cached_fb_lookup;
 };
 
 } // namespace VideoCore
