@@ -154,6 +154,14 @@ private:
     u32 last_index_buffer_offset{~0u};
     vk::IndexType last_index_buffer_type{vk::IndexType::eNoneKHR};
 
+    /// Draw state dirty tracking: compact snapshots of PICA rasterization and
+    /// depth-stencil registers. When unchanged between draws, skip all the
+    /// bitfield Assign() calls in SyncDrawState().
+    u64 prev_rast_snapshot{~0ULL};
+    u64 prev_ds_snapshot{~0ULL};
+    u32 prev_blend_color{~0u};
+    u32 prev_depth_color_mask{~0u};
+
     /// Texture unit dirty tracking: hash of PICA texture register state from the previous
     /// draw call. When the hash matches, we can reuse the existing texture descriptor set
     /// instead of allocating a new one and writing 3 image sampler descriptors.

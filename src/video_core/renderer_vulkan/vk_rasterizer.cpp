@@ -185,42 +185,80 @@ void RasterizerVulkan::LoadDefaultDiskResources(
 void RasterizerVulkan::SyncDrawState() {
     SyncDrawUniforms();
 
+    // Build compact snapshots of the PICA registers we care about and compare
+    // against the previous draw. On Cortex-A55 (in-order), the ~20 bitfield
+    // Assign() calls below cost ~5ns each due to read-modify-write on packed
+    // fields. When the registers haven't changed (very common in MK7 track
+    // geometry runs), we can skip all of them.
+    const auto& om = regs.framebuffer.output_merger;
+    const auto& fb = regs.framebuffer.framebuffer;
+    const auto& blend = om.alpha_blending;
+
+    // Quick check: hash the raw register words we depend on. If unchanged
+    // from the last draw, the pipeline_info is already up to date.
+    const u64 rast_snapshot =
+        static_cast<u64>(regs.rasterizer.cull_mode.Value()) |
+        (static_cast<u64>(fb.IsFlipped()) << 3) |
+        (static_cast<u64>(om.alphablend_enable) << 4) |
+        (static_cast<u64>(blend.blend_equation_rgb.Value()) << 8) |
+        (static_cast<u64>(blend.blend_equation_a.Value()) << 12) |
+        (static_cast<u64>(blend.factor_source_rgb.Value()) << 16) |
+        (static_cast<u64>(blend.factor_dest_rgb.Value()) << 20) |
+        (static_cast<u64>(blend.factor_source_a.Value()) << 24) |
+        (static_cast<u64>(blend.factor_dest_a.Value()) << 28) |
+        (static_cast<u64>(om.logic_op.Value()) << 32) |
+        (static_cast<u64>(fb.allow_color_write) << 36) |
+        (static_cast<u64>(fb.allow_depth_stencil_write) << 37) |
+        (static_cast<u64>(fb.depth_format.Value()) << 40);
+
+    const auto& stencil_test = om.stencil_test;
+    const u64 ds_snapshot =
+        static_cast<u64>(stencil_test.enable) |
+        (static_cast<u64>(stencil_test.func.Value()) << 1) |
+        (static_cast<u64>(stencil_test.action_stencil_fail.Value()) << 4) |
+        (static_cast<u64>(stencil_test.action_depth_pass.Value()) << 8) |
+        (static_cast<u64>(stencil_test.action_depth_fail.Value()) << 12) |
+        (static_cast<u64>(stencil_test.reference_value) << 16) |
+        (static_cast<u64>(stencil_test.input_mask) << 24) |
+        (static_cast<u64>(stencil_test.write_mask) << 32) |
+        (static_cast<u64>(om.depth_test_enable) << 40) |
+        (static_cast<u64>(om.depth_write_enable) << 41) |
+        (static_cast<u64>(om.depth_test_func.Value()) << 44);
+
+    if (rast_snapshot == prev_rast_snapshot && ds_snapshot == prev_ds_snapshot &&
+        om.blend_const.raw == prev_blend_color &&
+        om.depth_color_mask == prev_depth_color_mask) {
+        return;
+    }
+    prev_rast_snapshot = rast_snapshot;
+    prev_ds_snapshot = ds_snapshot;
+    prev_blend_color = om.blend_const.raw;
+    prev_depth_color_mask = om.depth_color_mask;
+
     // SyncCullMode();
     pipeline_info.state.rasterization.cull_mode.Assign(regs.rasterizer.cull_mode);
-    // If the framebuffer is flipped, request to also flip vulkan viewport
-    const bool is_flipped = regs.framebuffer.framebuffer.IsFlipped();
-    pipeline_info.state.rasterization.flip_viewport.Assign(is_flipped);
+    pipeline_info.state.rasterization.flip_viewport.Assign(fb.IsFlipped());
     // SyncBlendEnabled();
-    pipeline_info.state.blending.blend_enable = regs.framebuffer.output_merger.alphablend_enable;
+    pipeline_info.state.blending.blend_enable = om.alphablend_enable;
     // SyncBlendFuncs();
-    pipeline_info.state.blending.color_blend_eq.Assign(
-        regs.framebuffer.output_merger.alpha_blending.blend_equation_rgb);
-    pipeline_info.state.blending.alpha_blend_eq.Assign(
-        regs.framebuffer.output_merger.alpha_blending.blend_equation_a);
-    pipeline_info.state.blending.src_color_blend_factor.Assign(
-        regs.framebuffer.output_merger.alpha_blending.factor_source_rgb);
-    pipeline_info.state.blending.dst_color_blend_factor.Assign(
-        regs.framebuffer.output_merger.alpha_blending.factor_dest_rgb);
-    pipeline_info.state.blending.src_alpha_blend_factor.Assign(
-        regs.framebuffer.output_merger.alpha_blending.factor_source_a);
-    pipeline_info.state.blending.dst_alpha_blend_factor.Assign(
-        regs.framebuffer.output_merger.alpha_blending.factor_dest_a);
+    pipeline_info.state.blending.color_blend_eq.Assign(blend.blend_equation_rgb);
+    pipeline_info.state.blending.alpha_blend_eq.Assign(blend.blend_equation_a);
+    pipeline_info.state.blending.src_color_blend_factor.Assign(blend.factor_source_rgb);
+    pipeline_info.state.blending.dst_color_blend_factor.Assign(blend.factor_dest_rgb);
+    pipeline_info.state.blending.src_alpha_blend_factor.Assign(blend.factor_source_a);
+    pipeline_info.state.blending.dst_alpha_blend_factor.Assign(blend.factor_dest_a);
     // SyncBlendColor();
-    pipeline_info.dynamic_info.blend_color = regs.framebuffer.output_merger.blend_const.raw;
-    // SyncLogicOp();
-    // SyncColorWriteMask();
-    pipeline_info.state.blending.logic_op = regs.framebuffer.output_merger.logic_op;
-
-    const u32 color_mask = regs.framebuffer.framebuffer.allow_color_write != 0
-                               ? (regs.framebuffer.output_merger.depth_color_mask >> 8) & 0xF
+    pipeline_info.dynamic_info.blend_color = om.blend_const.raw;
+    // SyncLogicOp + SyncColorWriteMask();
+    pipeline_info.state.blending.logic_op = om.logic_op;
+    const u32 color_mask = fb.allow_color_write != 0
+                               ? (om.depth_color_mask >> 8) & 0xF
                                : 0;
     pipeline_info.state.blending.color_write_mask = color_mask;
 
     // SyncStencilTest();
-    const auto& stencil_test = regs.framebuffer.output_merger.stencil_test;
-    const bool test_enable = stencil_test.enable && regs.framebuffer.framebuffer.depth_format ==
+    const bool test_enable = stencil_test.enable && fb.depth_format ==
                                                         Pica::FramebufferRegs::DepthFormat::D24S8;
-
     pipeline_info.state.depth_stencil.stencil_test_enable.Assign(test_enable);
     pipeline_info.state.depth_stencil.stencil_fail_op.Assign(stencil_test.action_stencil_fail);
     pipeline_info.state.depth_stencil.stencil_pass_op.Assign(stencil_test.action_depth_pass);
@@ -230,21 +268,18 @@ void RasterizerVulkan::SyncDrawState() {
     pipeline_info.dynamic_info.stencil_compare_mask = stencil_test.input_mask;
     // SyncStencilWriteMask();
     pipeline_info.dynamic_info.stencil_write_mask =
-        (regs.framebuffer.framebuffer.allow_depth_stencil_write != 0)
-            ? static_cast<u32>(regs.framebuffer.output_merger.stencil_test.write_mask)
+        (fb.allow_depth_stencil_write != 0)
+            ? static_cast<u32>(stencil_test.write_mask)
             : 0;
     // SyncDepthTest();
-    const bool test_enabled = regs.framebuffer.output_merger.depth_test_enable == 1 ||
-                              regs.framebuffer.output_merger.depth_write_enable == 1;
-    const auto compare_op = regs.framebuffer.output_merger.depth_test_enable == 1
-                                ? regs.framebuffer.output_merger.depth_test_func.Value()
+    const bool test_enabled = om.depth_test_enable == 1 || om.depth_write_enable == 1;
+    const auto compare_op = om.depth_test_enable == 1
+                                ? om.depth_test_func.Value()
                                 : Pica::FramebufferRegs::CompareFunc::Always;
-
     pipeline_info.state.depth_stencil.depth_test_enable.Assign(test_enabled);
     pipeline_info.state.depth_stencil.depth_compare_op.Assign(compare_op);
     // SyncDepthWriteMask();
-    const bool write_enable = (regs.framebuffer.framebuffer.allow_depth_stencil_write != 0 &&
-                               regs.framebuffer.output_merger.depth_write_enable);
+    const bool write_enable = (fb.allow_depth_stencil_write != 0 && om.depth_write_enable);
     pipeline_info.state.depth_stencil.depth_write_enable.Assign(write_enable);
 }
 
@@ -475,36 +510,77 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 }
 
 bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
+    // Prepare index data before pipeline bind (may touch stream buffer).
+    u32 index_offset_val = 0;
+    vk::IndexType index_type_val = vk::IndexType::eUint16;
+    bool need_index_bind = false;
+
     if (is_indexed) {
-        SetupIndexArray();
+        // Inline the index array setup to avoid a separate scheduler.Record
+        // call. On Cortex-A55 each Record call costs ~200ns (placement new +
+        // virtual dispatch), so merging the index bind into the draw Record
+        // saves one call per indexed draw.
+        const bool index_u8 = regs.pipeline.index_array.format == 0;
+        const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
+        const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1 : 2);
+        index_type_val = native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
+
+        const u8* index_data =
+            memory.GetPhysicalPointer(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
+                                      regs.pipeline.index_array.offset);
+
+        auto [index_ptr, index_offset, _] = stream_buffer.Map(index_buffer_size, 2);
+        index_offset_val = index_offset;
+
+        if (index_u8 && !native_u8) {
+            u16* index_ptr_u16 = reinterpret_cast<u16*>(index_ptr);
+            for (u32 i = 0; i < regs.pipeline.num_vertices; i++) {
+                index_ptr_u16[i] = index_data[i];
+            }
+        } else {
+            std::memcpy(index_ptr, index_data, index_buffer_size);
+        }
+
+        stream_buffer.Commit(index_buffer_size);
+
+        // Only bind if offset or type changed since last draw.
+        if (index_offset_val != last_index_buffer_offset ||
+            index_type_val != last_index_buffer_type) {
+            last_index_buffer_offset = index_offset_val;
+            last_index_buffer_type = index_type_val;
+            need_index_bind = true;
+        }
     }
 
     // Never force synchronous compilation — always allow async shader builds.
-    // The old check (num_vertices <= 6 → sync) caused main-thread stalls on
-    // small draws like UI overlays, minimap, and item icons in MK7 course
-    // previews, which rapidly hit many new shader variants. Dropping the frame
-    // for one draw is better than freezing for 50-200ms of shader compilation.
     if (!pipeline_cache.BindPipeline(pipeline_info, !async_shaders)) {
         return true;
     }
 
-    const DrawParams params = {
-        .vertex_count = regs.pipeline.num_vertices,
-        .vertex_offset = -static_cast<s32>(vertex_info.vs_input_index_min),
-        .binding_count = pipeline_info.state.vertex_layout.binding_count,
-        .bindings = binding_offsets,
-        .is_indexed = is_indexed,
-    };
+    // Pre-compute vertex buffer offsets on the CPU side.
+    const u32 binding_count = pipeline_info.state.vertex_layout.binding_count;
+    std::array<vk::DeviceSize, 16> vb_offsets;
+    for (u32 i = 0; i < binding_count; i++) {
+        vb_offsets[i] = static_cast<vk::DeviceSize>(binding_offsets[i]);
+    }
 
-    scheduler.Record([this, params](vk::CommandBuffer cmdbuf) {
-        std::array<vk::DeviceSize, 16> offsets;
-        std::transform(params.bindings.begin(), params.bindings.end(), offsets.begin(),
-                       [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
-        cmdbuf.bindVertexBuffers(0, params.binding_count, vertex_buffers.data(), offsets.data());
-        if (params.is_indexed) {
-            cmdbuf.drawIndexed(params.vertex_count, 1, 0, params.vertex_offset, 0);
+    const u32 vertex_count = regs.pipeline.num_vertices;
+    const s32 vertex_offset = -static_cast<s32>(vertex_info.vs_input_index_min);
+
+    // Single Record call for vertex bind + optional index bind + draw.
+    // This replaces what was previously 2 separate Record calls (index bind
+    // + vertex bind/draw), saving one TypedCommand allocation per indexed draw.
+    scheduler.Record([this, binding_count, vb_offsets, vertex_count, vertex_offset,
+                      is_indexed, need_index_bind, index_offset_val,
+                      index_type_val](vk::CommandBuffer cmdbuf) {
+        cmdbuf.bindVertexBuffers(0, binding_count, vertex_buffers.data(), vb_offsets.data());
+        if (need_index_bind) {
+            cmdbuf.bindIndexBuffer(stream_buffer.Handle(), index_offset_val, index_type_val);
+        }
+        if (is_indexed) {
+            cmdbuf.drawIndexed(vertex_count, 1, 0, vertex_offset, 0);
         } else {
-            cmdbuf.draw(params.vertex_count, 1, 0, 0);
+            cmdbuf.draw(vertex_count, 1, 0, 0);
         }
     });
 
