@@ -59,9 +59,37 @@ void RightEyeDisabler::ReportEndFrame() {
     if (!enabled)
         return;
 
-    enable_for_frame = Common::Hacks::hack_manager.OverrideBooleanSetting(
+    constexpr double OverloadThreshold = 1.08;
+    constexpr double RecoveryThreshold = 0.95;
+    constexpr u32 OverloadFrames = 30;
+    constexpr u32 RecoveryFrames = 180;
+
+    const double frame_scale = gpu.impl->system.perf_stats->GetStableFrameTimeScale();
+    if (frame_scale > OverloadThreshold) {
+        overload_streak = std::min(overload_streak + 1, OverloadFrames);
+        recovery_streak = 0;
+    } else if (frame_scale < RecoveryThreshold) {
+        recovery_streak = std::min(recovery_streak + 1, RecoveryFrames);
+        overload_streak = 0;
+    } else {
+        overload_streak = 0;
+        recovery_streak = 0;
+    }
+
+    if (overload_streak >= OverloadFrames && !adaptive_disable_active) {
+        adaptive_disable_active = true;
+        overload_streak = 0;
+        LOG_INFO(Render, "Adaptive stereo shedding enabled right-eye suppression under GPU load");
+    } else if (recovery_streak >= RecoveryFrames && adaptive_disable_active) {
+        adaptive_disable_active = false;
+        recovery_streak = 0;
+        LOG_INFO(Render, "Adaptive stereo shedding restored right-eye rendering after recovery");
+    }
+
+    const bool forced_disable = Common::Hacks::hack_manager.OverrideBooleanSetting(
         Common::Hacks::HackType::RIGHT_EYE_DISABLE, gpu.impl->current_program_id,
         Settings::values.disable_right_eye_render.GetValue());
+    enable_for_frame = forced_disable || adaptive_disable_active;
 
     if (display_tranfer_happened) {
         top_screen_drawn = false;

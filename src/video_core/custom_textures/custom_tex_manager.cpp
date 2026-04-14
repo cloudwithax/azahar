@@ -60,14 +60,43 @@ CustomTexManager::CustomTexManager(Core::System& system_)
 
 CustomTexManager::~CustomTexManager() = default;
 
+std::size_t CustomTexManager::GetUploadBudgetForCurrentFrame() const {
+    const double frame_scale = system.perf_stats->GetStableFrameTimeScale();
+    if (frame_scale > 1.08) {
+        return 0;
+    }
+    if (frame_scale > 1.02) {
+        return 1;
+    }
+    if (frame_scale > 0.98) {
+        return 2;
+    }
+    return MAX_UPLOADS_PER_TICK;
+}
+
+bool CustomTexManager::ShouldDeferNewDecode() const {
+    const double frame_scale = system.perf_stats->GetStableFrameTimeScale();
+    return frame_scale > 1.04 && async_uploads.size() >= 2;
+}
+
 void CustomTexManager::TickFrame() {
     MICROPROFILE_SCOPE(CustomTexManager_TickFrame);
     if (!textures_loaded) {
         return;
     }
+    const std::size_t upload_budget = GetUploadBudgetForCurrentFrame();
+    if (upload_budget == 0) {
+        if (async_uploads.size() > 8) {
+            async_uploads.remove_if([](const AsyncUpload& upload) {
+                return upload.material->state == DecodeState::Decoded ||
+                       upload.material->state == DecodeState::Failed;
+            });
+        }
+        return;
+    }
     std::size_t num_uploads = 0;
     for (auto it = async_uploads.begin(); it != async_uploads.end();) {
-        if (num_uploads >= MAX_UPLOADS_PER_TICK) {
+        if (num_uploads >= upload_budget) {
             return;
         }
         switch (it->material->state) {
@@ -300,6 +329,9 @@ bool CustomTexManager::Decode(Material* material, std::function<bool()>&& upload
     if (!async_custom_loading) {
         material->LoadFromDisk(flip_png_files);
         return upload();
+    }
+    if (ShouldDeferNewDecode()) {
+        return false;
     }
     if (material->IsUnloaded()) {
         material->state = DecodeState::Pending;

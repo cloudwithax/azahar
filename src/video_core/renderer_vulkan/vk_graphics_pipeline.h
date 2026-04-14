@@ -301,6 +301,10 @@ struct Shader : public Common::AsyncHandle {
     explicit Shader(const Instance& instance, vk::ShaderStageFlagBits stage, std::string code);
     ~Shader();
 
+    [[nodiscard]] bool HasValidModule() const noexcept {
+        return static_cast<bool>(module);
+    }
+
     [[nodiscard]] vk::ShaderModule Handle() const noexcept {
         return module;
     }
@@ -322,6 +326,14 @@ public:
 
     bool Build(bool fail_on_compile_required = false);
 
+    [[nodiscard]] bool HasHandle() const noexcept {
+        return static_cast<bool>(pipeline);
+    }
+
+    [[nodiscard]] bool HasFailed() const noexcept {
+        return failed.load(std::memory_order_relaxed);
+    }
+
     [[nodiscard]] vk::Pipeline Handle() const noexcept {
         return *pipeline;
     }
@@ -338,6 +350,7 @@ private:
     PipelineInfo info;
     std::array<Shader*, 3> stages;
     bool is_pending{};
+    std::atomic_bool failed{false};
 };
 
 } // namespace Vulkan

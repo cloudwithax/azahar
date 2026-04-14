@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <memory>
+#include <mutex>
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Include/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
@@ -142,21 +143,18 @@ EShLanguage ToEshShaderStage(vk::ShaderStageFlagBits stage) {
 }
 
 bool InitializeCompiler() {
+    static std::once_flag glslang_init_flag;
     static bool glslang_initialized = false;
+    std::call_once(glslang_init_flag, [] {
+        if (!glslang::InitializeProcess()) {
+            LOG_CRITICAL(Render_Vulkan, "Failed to initialize glslang shader compiler");
+            return;
+        }
 
-    if (glslang_initialized) {
-        return true;
-    }
-
-    if (!glslang::InitializeProcess()) {
-        LOG_CRITICAL(Render_Vulkan, "Failed to initialize glslang shader compiler");
-        return false;
-    }
-
-    std::atexit([]() { glslang::FinalizeProcess(); });
-
-    glslang_initialized = true;
-    return true;
+        std::atexit([]() { glslang::FinalizeProcess(); });
+        glslang_initialized = true;
+    });
+    return glslang_initialized;
 }
 } // Anonymous namespace
 
@@ -229,6 +227,11 @@ std::vector<u32> CompileGLSL(std::string_view code, vk::ShaderStageFlagBits stag
 }
 
 vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
+    if (code.empty()) {
+        LOG_ERROR(Render_Vulkan, "Skipping Vulkan shader module creation for empty SPIR-V");
+        return {};
+    }
+
     const vk::ShaderModuleCreateInfo shader_info = {
         .codeSize = code.size() * sizeof(u32),
         .pCode = code.data(),
