@@ -155,6 +155,7 @@ void RasterizerVulkan::TickFrame() {
     res_cache.TickFrame();
     // Invalidate texture descriptor cache — descriptor sets may be recycled after frame boundary
     texture_descriptors_valid = false;
+    vertex_descriptors_valid = false;
 }
 
 void RasterizerVulkan::LoadDefaultDiskResources(
@@ -796,11 +797,14 @@ void RasterizerVulkan::FlushRegion(PAddr addr, u32 size) {
 void RasterizerVulkan::InvalidateRegion(PAddr addr, u32 size) {
     res_cache.InvalidateRegion(addr, size);
     texture_descriptors_valid = false;
+    vertex_descriptors_valid = false;
 }
 
 void RasterizerVulkan::FlushAndInvalidateRegion(PAddr addr, u32 size) {
     res_cache.FlushRegion(addr, size);
     res_cache.InvalidateRegion(addr, size);
+    texture_descriptors_valid = false;
+    vertex_descriptors_valid = false;
 }
 
 void RasterizerVulkan::ClearAll(bool flush) {

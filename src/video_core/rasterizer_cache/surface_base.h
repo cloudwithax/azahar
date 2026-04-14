@@ -21,6 +21,7 @@ enum class SurfaceFlagBits : u32 {
     Custom = 1 << 3,       ///< Surface texture has been replaced with a custom texture.
     ShadowMap = 1 << 4,    ///< Surface is used during shadow rendering.
     RenderTarget = 1 << 5, ///< Surface was a render target.
+    PendingClear = 1 << 6, ///< Surface was fully filled, clear it before next use.
 };
 DECLARE_ENUM_FLAG_OPERATORS(SurfaceFlagBits);
 

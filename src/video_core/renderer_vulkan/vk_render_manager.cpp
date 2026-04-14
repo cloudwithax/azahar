@@ -28,12 +28,12 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
                                    Common::Rectangle<u32> draw_rect) {
     const vk::Rect2D render_area = {
         .offset{
-            .x = static_cast<s32>(draw_rect.left),
-            .y = static_cast<s32>(draw_rect.bottom),
+            .x = 0,
+            .y = 0,
         },
         .extent{
-            .width = draw_rect.GetWidth(),
-            .height = draw_rect.GetHeight(),
+            .width = framebuffer->Width(),
+            .height = framebuffer->Height(),
         },
     };
     const RenderPass new_pass = {

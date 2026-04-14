@@ -348,6 +348,14 @@ public:
         return render_pass;
     }
 
+    u32 Width() const noexcept {
+        return width;
+    }
+
+    u32 Height() const noexcept {
+        return height;
+    }
+
     u32 Scale() const noexcept {
         return res_scale;
     }

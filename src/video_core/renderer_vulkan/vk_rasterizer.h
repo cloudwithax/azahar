@@ -154,6 +154,10 @@ private:
     /// instead of allocating a new one and writing 3 image sampler descriptors.
     u64 prev_texture_config_hash{};
     bool texture_descriptors_valid{false};
+
+    /// Vertex attribute dirty tracking: hash of PICA vertex attribute register state.
+    u64 prev_vertex_config_hash{};
+    bool vertex_descriptors_valid{false};
 };
 
 } // namespace Vulkan
