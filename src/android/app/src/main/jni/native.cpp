@@ -934,10 +934,11 @@ jdoubleArray Java_org_citra_citra_1emu_NativeLibrary_getPerfStats(JNIEnv* env,
                                                                    [[maybe_unused]] jobject obj) {
     auto& core = Core::System::GetInstance();
 
-    static jdoubleArray cached_stats = nullptr;
-    if (!cached_stats) {
-        cached_stats = env->NewDoubleArray(9);
-    }
+    // Create a fresh local reference each call. The previous code cached a
+    // local JNI reference in a static variable, which becomes a dangling
+    // pointer after the JNI call returns — causing crashes on some Android
+    // runtimes (observed on GammaOS Lite / LineageOS 14 forks).
+    jdoubleArray stats_array = env->NewDoubleArray(9);
 
     if (core.IsPoweredOn()) {
         auto results = core.GetAndResetPerfStats();
@@ -948,10 +949,10 @@ jdoubleArray Java_org_citra_citra_1emu_NativeLibrary_getPerfStats(JNIEnv* env,
                            results.time_gpu,        results.time_swap,
                            results.time_remaining};
 
-        env->SetDoubleArrayRegion(cached_stats, 0, 9, stats);
+        env->SetDoubleArrayRegion(stats_array, 0, 9, stats);
     }
 
-    return cached_stats;
+    return stats_array;
 }
 
 void Java_org_citra_citra_1emu_NativeLibrary_run__Ljava_lang_String_2(JNIEnv* env,
