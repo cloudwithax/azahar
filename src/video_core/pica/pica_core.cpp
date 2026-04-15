@@ -169,7 +169,11 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
 
     const u32 old_value = regs.internal.reg_array[id];
     const u32 write_mask = ExpandBitsToBytes[mask];
-    regs.internal.reg_array[id] = (old_value & ~write_mask) | (value & write_mask);
+    const u32 new_value = (old_value & ~write_mask) | (value & write_mask);
+    regs.internal.reg_array[id] = new_value;
+
+    // Track whether value actually changed for dirty flag optimization below.
+    const bool value_changed = new_value != old_value;
 
     const bool gs_unit_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
     const bool use_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
@@ -443,7 +447,13 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
         break;
     }
 
-    dirty_regs.Set(id);
+    // Only mark the register dirty if the value actually changed. Command lists
+    // frequently re-set registers to their current values between draws. Skipping
+    // the dirty flag avoids triggering unnecessary uniform syncs, shader rebuilds,
+    // and other downstream work in the renderer on Cortex-A55.
+    if (value_changed) [[likely]] {
+        dirty_regs.Set(id);
+    }
 }
 
 void PicaCore::SubmitImmediate(u32 value) {

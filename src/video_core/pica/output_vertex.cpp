@@ -10,8 +10,15 @@ namespace Pica {
 OutputVertex::OutputVertex(const RasterizerRegs& regs, const AttributeBuffer& output) {
     // Attributes can be used without being set in GPUREG_SH_OUTMAP_Oi
     // Hardware tests have shown that they are initialized to 1 in this case.
+    // Use a static const source to memcpy from instead of calling fill() per
+    // vertex — saves ~32 f24 constructions on every vertex on Cortex-A55.
+    static const std::array<f24, 32> ones = [] {
+        std::array<f24, 32> arr;
+        arr.fill(f24::One());
+        return arr;
+    }();
     std::array<f24, 32> vertex_slots_overflow;
-    vertex_slots_overflow.fill(f24::One());
+    std::memcpy(vertex_slots_overflow.data(), ones.data(), sizeof(vertex_slots_overflow));
 
     const u32 num_attributes = regs.vs_output_total & 7;
     for (std::size_t attrib = 0; attrib < num_attributes; ++attrib) {
