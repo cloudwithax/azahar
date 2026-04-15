@@ -26,6 +26,17 @@ RenderManager::~RenderManager() = default;
 
 void RenderManager::BeginRendering(const Framebuffer* framebuffer,
                                    Common::Rectangle<u32> draw_rect) {
+    // Fast path: if we're already in a render pass for this exact framebuffer,
+    // skip reconstructing the RenderPass struct and just increment the draw count.
+    // The inner BeginRendering(RenderPass) would compare and return early anyway,
+    // but this avoids the struct construction, Handle()/RenderPass() calls, and
+    // the three member writes (images, aspects, shadow_rendering) every draw.
+    if (cached_framebuffer == framebuffer && pass.render_pass) [[likely]] {
+        num_draws++;
+        return;
+    }
+    cached_framebuffer = framebuffer;
+
     const vk::Rect2D render_area = {
         .offset{
             .x = 0,
@@ -131,6 +142,7 @@ void RenderManager::EndRendering() {
     images = {};
     aspects = {};
     shadow_rendering = false;
+    cached_framebuffer = nullptr;
 
     // The Mali guide recommends flushing at the end of each major renderpass
     // Testing has shown this has a significant effect on rendering performance

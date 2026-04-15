@@ -70,6 +70,7 @@ private:
     bool shadow_rendering{};
     RenderPass pass{};
     u32 num_draws{};
+    const Framebuffer* cached_framebuffer{nullptr};
 };
 
 } // namespace Vulkan

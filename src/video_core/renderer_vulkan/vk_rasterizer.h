@@ -171,6 +171,13 @@ private:
     /// Vertex attribute dirty tracking: hash of PICA vertex attribute register state.
     u64 prev_vertex_config_hash{};
     bool vertex_descriptors_valid{false};
+
+    /// Cached framebuffer + draw_rect for FramebufferHelper destructor deduplication.
+    /// The destructor calls InvalidateRegion twice (color + depth) per draw. When
+    /// consecutive draws use the same FB and overlapping draw rects, the invalidation
+    /// is redundant because MarkValid + dirty_regions.set() are idempotent.
+    const Framebuffer* prev_framebuffer{nullptr};
+    Common::Rectangle<u32> prev_draw_rect{};
 };
 
 } // namespace Vulkan

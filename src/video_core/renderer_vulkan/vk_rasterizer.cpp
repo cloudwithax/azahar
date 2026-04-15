@@ -158,6 +158,7 @@ void RasterizerVulkan::TickFrame() {
     vertex_descriptors_valid = false;
     last_index_buffer_offset = ~0u;
     last_index_buffer_type = vk::IndexType::eNoneKHR;
+    prev_framebuffer = nullptr;
 }
 
 void RasterizerVulkan::LoadDefaultDiskResources(
@@ -652,7 +653,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         (write_depth_fb || regs.framebuffer.output_merger.depth_test_enable != 0 ||
          (has_stencil && pipeline_info.state.depth_stencil.stencil_test_enable));
 
-    const auto fb_helper = res_cache.GetFramebufferSurfaces(using_color_fb, using_depth_fb);
+    auto fb_helper = res_cache.GetFramebufferSurfaces(using_color_fb, using_depth_fb);
     const Framebuffer* framebuffer = fb_helper.Framebuffer();
     if (!framebuffer->Handle()) {
         return true;
@@ -723,6 +724,18 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     // Begin rendering
     const auto draw_rect = fb_helper.DrawRect();
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
+
+    // Skip FramebufferHelper destructor invalidation when the framebuffer and
+    // draw rect are unchanged from the previous draw. InvalidateRegion's MarkValid
+    // and dirty_regions.set() are idempotent, so skipping redundant calls is safe.
+    // This eliminates 2x GetSubRectInterval + 2x InvalidateRegion per draw for
+    // consecutive draws to the same FB (the common case).
+    if (framebuffer == prev_framebuffer && draw_rect == prev_draw_rect) {
+        fb_helper.SkipInvalidation();
+    } else {
+        prev_framebuffer = framebuffer;
+        prev_draw_rect = draw_rect;
+    }
 
     // Configure viewport and scissor
     const auto viewport = fb_helper.Viewport();
