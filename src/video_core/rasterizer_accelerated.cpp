@@ -275,6 +275,19 @@ void RasterizerAccelerated::SyncDrawUniforms() {
         fs_data_dirty = true;
     }
 
+    // Check if any FS-config-relevant registers were dirty before resetting.
+    // FSConfig reads from tex_units, texenv, framebuffer, lights, and light_lut.
+    // If none of these changed, UseFragmentShader can be skipped entirely.
+    {
+        const auto& d = pica.dirty_regs;
+        fs_config_changed = d.tex_units | d.texenv | d.framebuffer | d.light_lut;
+        if (!fs_config_changed) {
+            for (const auto& l : d.lights) {
+                if (l) { fs_config_changed = true; break; }
+            }
+        }
+    }
+
     // We have synched all uniforms, reset dirty state.
     pica.dirty_regs.Reset();
 }

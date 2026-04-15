@@ -713,8 +713,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     }
     SyncUtilityTextures(framebuffer);
 
-    // Sync and bind the shader
-    pipeline_cache.UseFragmentShader(regs, user_config);
+    // Sync and bind the shader (skip if no FS-relevant registers changed)
+    if (fs_config_changed) {
+        pipeline_cache.UseFragmentShader(regs, user_config);
+    }
 
     // Sync the LUTs within the texture buffer
     SyncAndUploadLUTs();
