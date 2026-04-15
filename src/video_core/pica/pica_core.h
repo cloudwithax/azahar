@@ -277,7 +277,7 @@ public:
     AttributeBuffer input_default_attributes{};
     ImmediateModeState immediate{};
 
-    static constexpr std::size_t VERTEX_CACHE_SIZE = 256;
+    static constexpr std::size_t VERTEX_CACHE_SIZE = 32;
     std::array<u32, VERTEX_CACHE_SIZE> vertex_cache_ids{};
 
 private:
@@ -319,6 +319,7 @@ private:
     Service::GSP::InterruptHandler signal_interrupt;
     GeometryPipeline geometry_pipeline;
     PrimitiveAssembler primitive_assembler;
+    PrimitiveAssembler::TriangleHandler add_triangle;
     CommandList cmd_list;
     std::unique_ptr<ShaderEngine> shader_engine;
 };

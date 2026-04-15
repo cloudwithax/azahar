@@ -37,11 +37,16 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
     InitializeRegs();
     dirty_regs.SetAllDirty();
 
+    // Cache the triangle handler once instead of reconstructing a std::function
+    // on every vertex. The old code created a new add_triangle lambda (which gets
+    // wrapped in std::function via TriangleHandler) on every submit_vertex call —
+    // that's a type-erased indirect call setup per vertex on Cortex-A55.
+    add_triangle = [this](const OutputVertex& v0, const OutputVertex& v1,
+                          const OutputVertex& v2) {
+        rasterizer->AddTriangle(v0, v1, v2);
+    };
+
     const auto submit_vertex = [this](const AttributeBuffer& buffer) {
-        const auto add_triangle = [this](const OutputVertex& v0, const OutputVertex& v1,
-                                         const OutputVertex& v2) {
-            rasterizer->AddTriangle(v0, v1, v2);
-        };
         const auto vertex = OutputVertex(regs.internal.rasterizer, buffer);
         primitive_assembler.SubmitVertex(vertex, add_triangle);
     };
@@ -113,6 +118,14 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         // Align read pointer to 8 bytes
         if (cmd_list.current_index % 2 != 0) {
             cmd_list.current_index++;
+        }
+
+        // Prefetch ahead in the command buffer to hide DRAM latency.
+        // On Cortex-A55 (in-order), a cache miss stalls the pipeline entirely.
+        // Prefetching 8 entries (~32 bytes) ahead keeps the next iteration's
+        // data in L1D by the time we need it.
+        if (cmd_list.current_index + 8 < cmd_list.length) {
+            __builtin_prefetch(&cmd_list.head[cmd_list.current_index + 8], 0, 3);
         }
 
         // Read the header and the value to write.
@@ -561,7 +574,11 @@ void PicaCore::LoadVertices(bool is_indexed) {
     const u16* index_address_16 = reinterpret_cast<const u16*>(index_address_8);
     const bool index_u16 = index_info.format != 0;
 
-    static constexpr std::size_t VERTEX_CACHE_SIZE = 256;
+    // Use a 32-entry vertex cache (32 * 256 bytes = 8 KB) instead of 256 entries
+    // (64 KB). Cortex-A55 has a 32 KB L1D cache; the old 64 KB cache thrashed it
+    // on every indexed draw. 32 entries still captures most vertex reuse in
+    // typical 3DS meshes (strip/fan topologies have very local index patterns).
+    static constexpr std::size_t VERTEX_CACHE_SIZE = 32;
     std::array<AttributeBuffer, VERTEX_CACHE_SIZE> vertex_cache;
     std::array<bool, VERTEX_CACHE_SIZE> vertex_cache_valid{};
     vertex_cache_valid.fill(false);

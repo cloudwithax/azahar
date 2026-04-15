@@ -177,7 +177,14 @@ u64 Timing::Timer::GetTicks() const {
 }
 
 void Timing::Timer::AddTicks(u64 ticks) {
-    downcount -= static_cast<u64>(ticks * cpu_clock_scale_num / cpu_clock_scale_den);
+    // Fast path: at 100% clock speed (the common case), num == den,
+    // so the multiply-divide is a no-op. Skip it to avoid an integer
+    // division per JIT block on Cortex-A55 (4-20 cycles per UDIV).
+    if (cpu_clock_scale_num == cpu_clock_scale_den) [[likely]] {
+        downcount -= static_cast<s64>(ticks);
+    } else {
+        downcount -= static_cast<s64>(ticks * cpu_clock_scale_num / cpu_clock_scale_den);
+    }
 }
 
 u64 Timing::Timer::GetIdleTicks() const {
