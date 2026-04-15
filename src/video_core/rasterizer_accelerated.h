@@ -66,6 +66,11 @@ protected:
     Pica::Shader::Generator::FSUniformData fs_data{};
     bool vs_data_dirty = true;
     bool fs_data_dirty = true;
+
+    /// Set by SyncDrawUniforms when any FS-config-relevant PICA registers have
+    /// changed since the last draw. Used to skip the expensive FSConfig
+    /// construction + hash + map lookup in UseFragmentShader.
+    bool fs_config_changed = true;
 };
 
 } // namespace VideoCore
