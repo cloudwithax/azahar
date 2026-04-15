@@ -115,6 +115,9 @@ public:
     }
 
     ~FramebufferHelper() {
+        if (skip_invalidation) {
+            return;
+        }
         const Common::Rectangle draw_rect_unscaled{draw_rect / fb->Scale()};
         const auto invalidate = [&](SurfaceId surface_id, u32 level) {
             const auto& surface = res_cache->GetSurface(surface_id);
@@ -147,12 +150,20 @@ public:
         return viewport;
     }
 
+    /// Skip the destructor's InvalidateRegion calls. Used when the caller
+    /// knows that consecutive draws to the same framebuffer make the
+    /// invalidation redundant (MarkValid + dirty_regions.set are idempotent).
+    void SkipInvalidation() noexcept {
+        skip_invalidation = true;
+    }
+
 private:
     RasterizerCache<T>* res_cache;
     typename T::Framebuffer* fb;
     Common::Rectangle<s32> scissor_rect;
     Common::Rectangle<u32> draw_rect;
     ViewportInfo viewport;
+    bool skip_invalidation{false};
 };
 
 } // namespace VideoCore

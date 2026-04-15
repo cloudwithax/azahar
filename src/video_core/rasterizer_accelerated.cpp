@@ -145,6 +145,19 @@ void RasterizerAccelerated::SyncDrawUniforms() {
     const bool prev_flipped = std::exchange(vs_data.flip_viewport, is_flipped);
     vs_data_dirty = is_flipped != prev_flipped;
 
+    // Fast path: if no PICA registers have been written since the last draw,
+    // skip all the dirty flag checks. On Cortex-A55, this saves ~10 branch
+    // evaluations and avoids touching the dirty_regs cache lines.
+    {
+        bool any_dirty = false;
+        for (const auto& qw : dirty.qwords) {
+            any_dirty |= (qw != 0);
+        }
+        if (!any_dirty) {
+            return;
+        }
+    }
+
     // Sync clip plane uniforms
     if (dirty.CheckClipping()) {
         const auto raw_clip_coef = regs.rasterizer.GetClipCoef();
