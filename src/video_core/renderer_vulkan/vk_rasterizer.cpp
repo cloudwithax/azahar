@@ -674,42 +674,41 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         fs_data_dirty = true;
     }
 
-    // Compute a hash of the PICA texture register state to skip redundant descriptor
-    // set allocation and writes. MK7 races draw many consecutive primitives with
-    // identical textures (kart body parts, repeated track segments).
-    const auto& tex = regs.texturing;
-    const u32 color_fb_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
-    u64 tex_hash = 0xcbf29ce484222325ULL; // FNV-1a offset basis
-    constexpr u64 fnv_prime = 0x100000001b3ULL;
-    const auto hash_u32 = [&](u32 val) {
-        tex_hash ^= val;
-        tex_hash *= fnv_prime;
-    };
-    hash_u32(tex.main_config.texture0_enable | (tex.main_config.texture1_enable << 1) |
-             (tex.main_config.texture2_enable << 2));
-    // Hash texture0 config: address, dimensions, wrap/filter/type, lod, border
-    hash_u32(tex.texture0.address);
-    hash_u32(tex.texture0.border_color.raw);
-    hash_u32(*reinterpret_cast<const u32*>(&tex.texture0.height));
-    hash_u32(*reinterpret_cast<const u32*>(&tex.texture0.mag_filter));
-    hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture0_format)));
-    // Hash texture1 config
-    hash_u32(tex.texture1.address);
-    hash_u32(*reinterpret_cast<const u32*>(&tex.texture1.height));
-    hash_u32(*reinterpret_cast<const u32*>(&tex.texture1.mag_filter));
-    hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture1_format)));
-    // Hash texture2 config
-    hash_u32(tex.texture2.address);
-    hash_u32(*reinterpret_cast<const u32*>(&tex.texture2.height));
-    hash_u32(*reinterpret_cast<const u32*>(&tex.texture2.mag_filter));
-    hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture2_format)));
-    // Include color FB address to detect feedback loop changes
-    hash_u32(color_fb_addr);
+    // Only recompute the texture config hash when PICA texture registers have
+    // actually been written. The FNV-1a hash over 14 register fields costs ~50ns
+    // on Cortex-A55 (14 multiply-xor pairs), which is wasted when tex_units
+    // hasn't changed and descriptors are still valid.
+    if (tex_units_changed || !texture_descriptors_valid) {
+        const auto& tex = regs.texturing;
+        const u32 color_fb_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
+        u64 tex_hash = 0xcbf29ce484222325ULL; // FNV-1a offset basis
+        constexpr u64 fnv_prime = 0x100000001b3ULL;
+        const auto hash_u32 = [&](u32 val) {
+            tex_hash ^= val;
+            tex_hash *= fnv_prime;
+        };
+        hash_u32(tex.main_config.texture0_enable | (tex.main_config.texture1_enable << 1) |
+                 (tex.main_config.texture2_enable << 2));
+        hash_u32(tex.texture0.address);
+        hash_u32(tex.texture0.border_color.raw);
+        hash_u32(*reinterpret_cast<const u32*>(&tex.texture0.height));
+        hash_u32(*reinterpret_cast<const u32*>(&tex.texture0.mag_filter));
+        hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture0_format)));
+        hash_u32(tex.texture1.address);
+        hash_u32(*reinterpret_cast<const u32*>(&tex.texture1.height));
+        hash_u32(*reinterpret_cast<const u32*>(&tex.texture1.mag_filter));
+        hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture1_format)));
+        hash_u32(tex.texture2.address);
+        hash_u32(*reinterpret_cast<const u32*>(&tex.texture2.height));
+        hash_u32(*reinterpret_cast<const u32*>(&tex.texture2.mag_filter));
+        hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture2_format)));
+        hash_u32(color_fb_addr);
 
-    if (tex_hash != prev_texture_config_hash || !texture_descriptors_valid) {
-        prev_texture_config_hash = tex_hash;
-        texture_descriptors_valid = true;
-        SyncTextureUnits(framebuffer);
+        if (tex_hash != prev_texture_config_hash || !texture_descriptors_valid) {
+            prev_texture_config_hash = tex_hash;
+            texture_descriptors_valid = true;
+            SyncTextureUnits(framebuffer);
+        }
     }
     SyncUtilityTextures(framebuffer);
 

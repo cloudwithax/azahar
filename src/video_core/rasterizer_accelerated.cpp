@@ -280,6 +280,7 @@ void RasterizerAccelerated::SyncDrawUniforms() {
     // If none of these changed, UseFragmentShader can be skipped entirely.
     {
         const auto& d = pica.dirty_regs;
+        tex_units_changed = d.tex_units;
         fs_config_changed = d.tex_units | d.texenv | d.framebuffer | d.light_lut;
         if (!fs_config_changed) {
             for (const auto& l : d.lights) {

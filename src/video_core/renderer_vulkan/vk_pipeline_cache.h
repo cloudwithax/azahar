@@ -161,6 +161,11 @@ private:
     std::array<u64, MAX_SHADER_STAGES> shader_hashes;
     std::array<Shader*, MAX_SHADER_STAGES> current_shaders;
 
+    /// Cached pipeline lookup: skip GetPipeline hash + map lookup when the
+    /// static pipeline state is unchanged from the previous draw.
+    GraphicsPipeline* cached_pipeline{};
+    StaticPipelineInfo cached_pipeline_state{};
+
     Shader trivial_vertex_shader;
 
     u64 current_program_id{0};

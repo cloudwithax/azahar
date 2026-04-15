@@ -394,7 +394,18 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
         info.state.shader_ids[i] = shader_hashes[i];
     }
 
-    GraphicsPipeline* const pipeline = curr_disk_cache->GetPipeline(info);
+    // Cache the last pipeline lookup. GetPipeline hashes ~144 bytes of
+    // StaticPipelineInfo + does a robin_map lookup every call. When the
+    // static pipeline state hasn't changed (common for consecutive draws
+    // with the same shader/blend/depth config), reuse the cached pointer.
+    GraphicsPipeline* pipeline;
+    if (cached_pipeline && std::memcmp(&info.state, &cached_pipeline_state, sizeof(info.state)) == 0) {
+        pipeline = cached_pipeline;
+    } else {
+        pipeline = curr_disk_cache->GetPipeline(info);
+        cached_pipeline = pipeline;
+        std::memcpy(&cached_pipeline_state, &info.state, sizeof(info.state));
+    }
     if ((!pipeline->IsDone() && !pipeline->TryBuild(wait_built)) || pipeline->HasFailed() ||
         !pipeline->HasHandle()) {
         return false;

@@ -71,6 +71,10 @@ protected:
     /// changed since the last draw. Used to skip the expensive FSConfig
     /// construction + hash + map lookup in UseFragmentShader.
     bool fs_config_changed = true;
+
+    /// Set by SyncDrawUniforms when tex_units dirty flag was set. Used to skip
+    /// the texture config hash computation in Draw() when textures haven't changed.
+    bool tex_units_changed = true;
 };
 
 } // namespace VideoCore
