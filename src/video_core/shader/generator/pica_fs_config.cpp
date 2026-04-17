@@ -6,6 +6,54 @@
 
 namespace Pica::Shader {
 
+namespace {
+
+using TevOp = Pica::TexturingRegs::TevStageConfig::Operation;
+
+// Returns how many argument slots the given TEV operation actually reads.
+// Arg1 is always used; arg2/arg3 depend on the op. Bytes outside the used
+// arg range are dead inputs to codegen and safe to zero for hash canonicalization.
+constexpr u32 NumTevArgs(TevOp op) {
+    switch (op) {
+    case TevOp::Replace:
+        return 1;
+    case TevOp::Lerp:
+    case TevOp::MultiplyThenAdd:
+    case TevOp::AddThenMultiply:
+        return 3;
+    default:
+        return 2;
+    }
+}
+
+// sources_raw: [0:4]=color_source1, [4:8]=color_source2, [8:12]=color_source3,
+//              [16:20]=alpha_source1, [20:24]=alpha_source2, [24:28]=alpha_source3.
+// modifiers_raw: [0:4]=color_modifier1, [4:8]=color_modifier2, [8:12]=color_modifier3,
+//                [12:15]=alpha_modifier1, [16:19]=alpha_modifier2, [20:23]=alpha_modifier3.
+constexpr u32 ColorSourcesMask(u32 num_args) {
+    return (1u << (4u * num_args)) - 1u;
+}
+
+constexpr u32 AlphaSourcesMask(u32 num_args) {
+    return ColorSourcesMask(num_args) << 16u;
+}
+
+constexpr u32 ColorModifiersMask(u32 num_args) {
+    return (1u << (4u * num_args)) - 1u;
+}
+
+constexpr u32 AlphaModifiersMask(u32 num_args) {
+    // Alpha modifiers are 3 bits at offsets 12, 16, 20.
+    constexpr u32 kSlot[3] = {0x7u << 12, 0x7u << 16, 0x7u << 20};
+    u32 mask = 0;
+    for (u32 i = 0; i < num_args; ++i) {
+        mask |= kSlot[i];
+    }
+    return mask;
+}
+
+} // namespace
+
 FramebufferConfig::FramebufferConfig(const Pica::RegsInternal& regs) {
     const auto& output_merger = regs.framebuffer.output_merger;
     scissor_test_mode.Assign(regs.rasterizer.scissor_test.mode);
@@ -19,6 +67,9 @@ FramebufferConfig::FramebufferConfig(const Pica::RegsInternal& regs) {
     requested_logic_op = output_merger.logic_op;
 
     logic_op.Assign(Pica::FramebufferRegs::LogicOp::Copy);
+
+    // ApplyProfile may zero requested_logic_op once it has been consumed;
+    // that reduces hash variants on drivers that support native logic op.
 
     if (alphablend_enable) {
         requested_rgb_blend.eq = output_merger.alpha_blending.blend_equation_rgb.Value();
@@ -36,6 +87,10 @@ void FramebufferConfig::ApplyProfile(const Profile& profile) {
     if (!profile.has_logic_op && !alphablend_enable) {
         logic_op.Assign(requested_logic_op);
     }
+    // requested_logic_op is only read above. Native-logic-op drivers drive
+    // the pipeline logic op from the PICA regs directly, not this config,
+    // so clearing it here collapses hash variants.
+    requested_logic_op = Pica::FramebufferRegs::LogicOp::Copy;
 
     // Check if we don't need blend min/max emulation.
     if ((profile.has_blend_minmax_factor || profile.is_vulkan) && alphablend_enable) {
@@ -50,8 +105,13 @@ TextureConfig::TextureConfig(const Pica::TexturingRegs& regs) {
     combiner_buffer_input.Assign(regs.tev_combiner_buffer_input.update_mask_rgb.Value() |
                                  regs.tev_combiner_buffer_input.update_mask_a.Value() << 4);
     fog_mode.Assign(regs.fog_mode);
-    fog_flip.Assign(regs.fog_flip != 0);
-    shadow_texture_orthographic.Assign(regs.shadow.orthographic != 0);
+    // fog_flip only affects codegen inside WriteFog, which is gated on fog_mode==Fog.
+    fog_flip.Assign(regs.fog_mode == Pica::TexturingRegs::FogMode::Fog &&
+                    regs.fog_flip != 0);
+    // shadow_texture_orthographic only affects codegen when texture0 is a Shadow2D sampler.
+    shadow_texture_orthographic.Assign(
+        regs.texture0.type == Pica::TexturingRegs::TextureConfig::Shadow2D &&
+        regs.shadow.orthographic != 0);
 
     const auto pica_textures = regs.GetTextures();
     for (u32 tex_index = 0; tex_index < 3; tex_index++) {
@@ -65,15 +125,35 @@ TextureConfig::TextureConfig(const Pica::TexturingRegs& regs) {
     const auto& stages = regs.GetTevStages();
     for (std::size_t i = 0; i < tev_stages.size(); i++) {
         const auto& tev_stage = stages[i];
-        tev_stages[i].sources_raw = tev_stage.sources_raw;
-        tev_stages[i].modifiers_raw = tev_stage.modifiers_raw;
-        tev_stages[i].ops_raw = tev_stage.ops_raw;
-        tev_stages[i].scales_raw = tev_stage.scales_raw;
-        if (tev_stage.color_op == Pica::TexturingRegs::TevStageConfig::Operation::Dot3_RGBA) {
-            tev_stages[i].sources_raw &= 0xFFF;
-            tev_stages[i].modifiers_raw &= 0xFFF;
-            tev_stages[i].ops_raw &= 0xF;
+        u32 sources_raw = tev_stage.sources_raw;
+        u32 modifiers_raw = tev_stage.modifiers_raw;
+        u32 ops_raw = tev_stage.ops_raw;
+        u32 scales_raw = tev_stage.scales_raw;
+
+        const TevOp color_op = tev_stage.color_op;
+        // Dot3_RGBA produces alpha from the color dot product; alpha_op,
+        // alpha sources, alpha modifiers, and alpha scale are all unused.
+        const bool dot3_rgba = (color_op == TevOp::Dot3_RGBA);
+
+        const u32 color_src_mask = ColorSourcesMask(NumTevArgs(color_op));
+        const u32 color_mod_mask = ColorModifiersMask(NumTevArgs(color_op));
+
+        u32 alpha_src_mask = 0;
+        u32 alpha_mod_mask = 0;
+        u32 ops_mask = 0xF;      // color_op bits [0:4]
+        u32 scales_mask = 0x3;   // color scale bits [0:2]
+        if (!dot3_rgba) {
+            const TevOp alpha_op = tev_stage.alpha_op;
+            alpha_src_mask = AlphaSourcesMask(NumTevArgs(alpha_op));
+            alpha_mod_mask = AlphaModifiersMask(NumTevArgs(alpha_op));
+            ops_mask |= 0xFu << 16;      // alpha_op bits [16:20]
+            scales_mask |= 0x3u << 16;   // alpha scale bits [16:18]
         }
+
+        tev_stages[i].sources_raw = sources_raw & (color_src_mask | alpha_src_mask);
+        tev_stages[i].modifiers_raw = modifiers_raw & (color_mod_mask | alpha_mod_mask);
+        tev_stages[i].ops_raw = ops_raw & ops_mask;
+        tev_stages[i].scales_raw = scales_raw & scales_mask;
     }
 }
 

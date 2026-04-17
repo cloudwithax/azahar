@@ -25,17 +25,28 @@ RenderManager::RenderManager(const Instance& instance, Scheduler& scheduler)
 RenderManager::~RenderManager() = default;
 
 void RenderManager::BeginRendering(const Framebuffer* framebuffer,
-                                   Common::Rectangle<u32> draw_rect) {
-    // Fast path: if we're already in a render pass for this exact framebuffer,
-    // skip reconstructing the RenderPass struct and just increment the draw count.
-    // The inner BeginRendering(RenderPass) would compare and return early anyway,
-    // but this avoids the struct construction, Handle()/RenderPass() calls, and
-    // the three member writes (images, aspects, shadow_rendering) every draw.
-    if (cached_framebuffer == framebuffer && pass.render_pass) [[likely]] {
+                                   Common::Rectangle<u32> draw_rect, RenderHints hints) {
+    // Fast path: if we're already in a render pass for this exact framebuffer
+    // AND the prediction is compatible (we don't need to upgrade from DontCare
+    // to Store), just increment the draw count.
+    if (cached_framebuffer == framebuffer && pass.render_pass &&
+        (pass_depth_store_predicted || !hints.depth_store)) [[likely]] {
         num_draws++;
         return;
     }
-    cached_framebuffer = framebuffer;
+
+    // Select the correct renderpass variant. The default (hints.depth_store=true)
+    // matches framebuffer->RenderPass(); the opt-in DontCare variant is fetched
+    // from the cache — renderpass compatibility rules (Vulkan spec §8.2) state
+    // that storeOp does not affect compatibility, so the framebuffer handle and
+    // pipeline objects remain valid across variants.
+    vk::RenderPass selected_rp = framebuffer->RenderPass();
+    if (!hints.depth_store && framebuffer->Format(VideoCore::SurfaceType::Depth) !=
+                                  VideoCore::PixelFormat::Invalid) {
+        const auto color_fmt = framebuffer->Format(VideoCore::SurfaceType::Color);
+        const auto depth_fmt = framebuffer->Format(VideoCore::SurfaceType::Depth);
+        selected_rp = GetRenderpass(color_fmt, depth_fmt, false, /*depth_store=*/false);
+    }
 
     const vk::Rect2D render_area = {
         .offset{
@@ -49,7 +60,7 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
     };
     const RenderPass new_pass = {
         .framebuffer = framebuffer->Handle(),
-        .render_pass = framebuffer->RenderPass(),
+        .render_pass = selected_rp,
         .render_area = render_area,
         .clear = {},
         .do_clear = false,
@@ -58,6 +69,27 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
     aspects = framebuffer->Aspects();
     shadow_rendering = framebuffer->shadow_rendering;
     BeginRendering(new_pass);
+
+    // Set tracking state AFTER the inner call: EndRendering() inside inner
+    // BeginRendering resets these fields to defaults, which would otherwise
+    // clobber our predictions if we set them before.
+    cached_framebuffer = framebuffer;
+    pass_framebuffer = framebuffer;
+    pass_depth_store_predicted = hints.depth_store;
+}
+
+void RenderManager::EnsureDepthStore() {
+    // Only upgrade if we're in an active pass that was begun with depth_store=false.
+    if (!pass.render_pass || pass_depth_store_predicted || !pass_framebuffer) {
+        return;
+    }
+    // Our prediction (no depth writes) was wrong. End the DontCare pass (nothing
+    // has been written to depth yet, so DontCare is still valid) and restart the
+    // same framebuffer with depth_store=true. Callers MUST invoke this BEFORE
+    // recording any scheduler command that writes depth.
+    const Framebuffer* fb = pass_framebuffer;
+    EndRendering();
+    BeginRendering(fb, {}, RenderHints{.depth_store = true});
 }
 
 void RenderManager::BeginRendering(const RenderPass& new_pass) {
@@ -143,6 +175,8 @@ void RenderManager::EndRendering() {
     aspects = {};
     shadow_rendering = false;
     cached_framebuffer = nullptr;
+    pass_framebuffer = nullptr;
+    pass_depth_store_predicted = true;
 
     // The Mali guide recommends flushing at the end of each major renderpass
     // Testing has shown this has a significant effect on rendering performance
@@ -153,7 +187,8 @@ void RenderManager::EndRendering() {
 }
 
 vk::RenderPass RenderManager::GetRenderpass(VideoCore::PixelFormat color,
-                                            VideoCore::PixelFormat depth, bool is_clear) {
+                                            VideoCore::PixelFormat depth, bool is_clear,
+                                            bool depth_store) {
     std::scoped_lock lock{cache_mutex};
 
     const u32 color_index =
@@ -166,20 +201,22 @@ vk::RenderPass RenderManager::GetRenderpass(VideoCore::PixelFormat color,
     ASSERT_MSG(color_index <= NumColorFormats && depth_index <= NumDepthFormats,
                "Invalid color index {} and/or depth_index {}", color_index, depth_index);
 
-    vk::UniqueRenderPass& renderpass = cached_renderpasses[color_index][depth_index][is_clear];
+    vk::UniqueRenderPass& renderpass =
+        cached_renderpasses[color_index][depth_index][is_clear][depth_store];
     if (!renderpass) {
         const vk::Format color_format = instance.GetTraits(color).native;
         const vk::Format depth_format = instance.GetTraits(depth).native;
         const vk::AttachmentLoadOp load_op =
             is_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
-        renderpass = CreateRenderPass(color_format, depth_format, load_op);
+        renderpass = CreateRenderPass(color_format, depth_format, load_op, depth_store);
     }
 
     return *renderpass;
 }
 
 vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Format depth,
-                                                     vk::AttachmentLoadOp load_op) const {
+                                                     vk::AttachmentLoadOp load_op,
+                                                     bool depth_store) const {
     u32 attachment_count = 0;
     std::array<vk::AttachmentDescription, 2> attachments;
 
@@ -213,12 +250,14 @@ vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Forma
     }
 
     if (depth != vk::Format::eUndefined) {
+        const vk::AttachmentStoreOp depth_store_op =
+            depth_store ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare;
         attachments[attachment_count] = vk::AttachmentDescription{
             .format = depth,
             .loadOp = load_op,
-            .storeOp = vk::AttachmentStoreOp::eStore,
+            .storeOp = depth_store_op,
             .stencilLoadOp = load_op,
-            .stencilStoreOp = vk::AttachmentStoreOp::eStore,
+            .stencilStoreOp = depth_store_op,
             .initialLayout = vk::ImageLayout::eGeneral,
             .finalLayout = vk::ImageLayout::eGeneral,
         };

@@ -722,9 +722,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncAndUploadLUTsLF();
     UploadUniforms(accelerate);
 
-    // Begin rendering
+    // Begin rendering. Hint depth_store=false when this draw neither writes
+    // depth nor stencil — saves a tile flush on Mali-class GPUs. The render
+    // manager transparently upgrades to depth_store=true if a later draw in
+    // the same pass needs depth writes; the upgrade happens before any
+    // depth-writing command is recorded, so DontCare is still correct on end
+    // of the superseded pass (nothing was written to depth in it).
     const auto draw_rect = fb_helper.DrawRect();
-    renderpass_cache.BeginRendering(framebuffer, draw_rect);
+    const Vulkan::RenderHints hints{.depth_store = write_depth_fb};
+    renderpass_cache.BeginRendering(framebuffer, draw_rect, hints);
 
     // Skip FramebufferHelper destructor invalidation when the framebuffer and
     // draw rect are unchanged from the previous draw. InvalidateRegion's MarkValid

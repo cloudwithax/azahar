@@ -345,6 +345,80 @@ bool TextureRuntime::ClearTexture(Surface& surface, const VideoCore::TextureClea
     };
 
     if (clear.texture_rect == surface.GetScaledRect()) {
+        // Full-surface clears at level 0 go through a loadOp=eClear renderpass
+        // instead of vkCmdClearColorImage/DepthStencilImage. On Mali tilers this
+        // hits the fast-clear unit (no tile materialization, single bulk memfill
+        // via the fragment pipe) and avoids a cross-pipe sync with the transfer
+        // queue that would otherwise flush in-flight graphics work.
+        if (clear.texture_level == 0) {
+            const bool is_color =
+                static_cast<bool>(params.aspect & vk::ImageAspectFlagBits::eColor);
+            const auto color_format = is_color ? surface.pixel_format : PixelFormat::Invalid;
+            const auto depth_format = is_color ? PixelFormat::Invalid : surface.pixel_format;
+            const auto render_pass =
+                renderpass_cache.GetRenderpass(color_format, depth_format, true);
+            const auto scaled_rect = surface.GetScaledRect();
+            const auto framebuffer = surface.Framebuffer();
+            scheduler.Record([params, is_color, clear, render_pass, scaled_rect,
+                              framebuffer](vk::CommandBuffer cmdbuf) {
+                const vk::AccessFlags access_flag =
+                    is_color ? vk::AccessFlagBits::eColorAttachmentRead |
+                                   vk::AccessFlagBits::eColorAttachmentWrite
+                             : vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                                   vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+                const vk::PipelineStageFlags pipeline_flags =
+                    is_color ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+                             : vk::PipelineStageFlagBits::eEarlyFragmentTests;
+
+                const vk::ImageMemoryBarrier pre_barrier = {
+                    .srcAccessMask = params.src_access,
+                    .dstAccessMask = access_flag,
+                    .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = params.src_image,
+                    .subresourceRange = MakeSubresourceRange(params.aspect, 0),
+                };
+                const vk::ImageMemoryBarrier post_barrier = {
+                    .srcAccessMask = access_flag,
+                    .dstAccessMask = params.src_access,
+                    .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = params.src_image,
+                    .subresourceRange = MakeSubresourceRange(params.aspect, 0),
+                };
+
+                const vk::ClearValue clear_value = MakeClearValue(clear.value);
+                const vk::Rect2D full_render_area = {
+                    .offset{.x = static_cast<s32>(scaled_rect.left),
+                            .y = static_cast<s32>(scaled_rect.bottom)},
+                    .extent{.width = scaled_rect.GetWidth(),
+                            .height = scaled_rect.GetHeight()},
+                };
+                const vk::RenderPassBeginInfo renderpass_begin_info = {
+                    .renderPass = render_pass,
+                    .framebuffer = framebuffer,
+                    .renderArea = full_render_area,
+                    .clearValueCount = 1,
+                    .pClearValues = &clear_value,
+                };
+
+                cmdbuf.pipelineBarrier(params.pipeline_flags, pipeline_flags,
+                                       vk::DependencyFlagBits::eByRegion, {}, {}, pre_barrier);
+                cmdbuf.beginRenderPass(renderpass_begin_info, vk::SubpassContents::eInline);
+                cmdbuf.endRenderPass();
+                cmdbuf.pipelineBarrier(pipeline_flags, params.pipeline_flags,
+                                       vk::DependencyFlagBits::eByRegion, {}, {}, post_barrier);
+            });
+            return true;
+        }
+
+        // Non-zero mip levels can't use the renderpass path because
+        // Surface::Framebuffer() binds only level 0. Fall back to a transfer
+        // clear for the sub-mip case.
         scheduler.Record([params, clear](vk::CommandBuffer cmdbuf) {
             const vk::ImageSubresourceRange range = {
                 .aspectMask = params.aspect,
