@@ -16,6 +16,10 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 namespace AudioCore {
 
 TimeStretcher::TimeStretcher() : sound_touch(std::make_unique<soundtouch::SoundTouch>()) {
@@ -83,9 +87,6 @@ std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
         }
 
         for (std::size_t i = 0; i < (2 * num_in); i++) {
-            // Conventional integer PCM uses a range of -32768 to 32767,
-            // but float samples use -1 to 1
-            // As a result we need to scale sample values during conversion
             const float temp = static_cast<float>(in[i]) / std::numeric_limits<s16>::max();
             scratch_in[i] = static_cast<soundtouch::SAMPLETYPE>(temp);
         }
@@ -95,7 +96,6 @@ std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
         const std::size_t samples_received =
             sound_touch->receiveSamples(scratch_out.data(), static_cast<u32>(num_out));
 
-        // Converting output samples back to shorts so we can use them
         for (std::size_t i = 0; i < (2 * samples_received); i++) {
             const s16 temp =
                 static_cast<s16>(scratch_out[i] * std::numeric_limits<s16>::max());

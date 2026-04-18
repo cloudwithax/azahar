@@ -10,6 +10,10 @@
 #include "common/swap.h"
 #include "common/vector_math.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 namespace Common::Color {
 
 /// Convert a 1-bit color component to 8 bit
@@ -350,3 +354,177 @@ inline void EncodeX24S8(u8 stencil, u8* bytes) {
 }
 
 } // namespace Common::Color
+
+#if defined(__ARM_NEON)
+namespace Common::Color::NEON {
+
+inline void DecodeRGB565Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8, src += 16, dst += 32) {
+        const uint16x8_t pixels = vld1q_u16(reinterpret_cast<const u16*>(src));
+        const uint16x8_t r5 = vandq_u16(vshrq_n_u16(pixels, 11), vdupq_n_u16(0x1F));
+        const uint16x8_t g6 = vandq_u16(vshrq_n_u16(pixels, 5), vdupq_n_u16(0x3F));
+        const uint16x8_t b5 = vandq_u16(pixels, vdupq_n_u16(0x1F));
+        const uint16x8_t r8 = vorrq_u16(vshlq_n_u16(r5, 3), vshrq_n_u16(r5, 2));
+        const uint16x8_t g8 = vorrq_u16(vshlq_n_u16(g6, 2), vshrq_n_u16(g6, 4));
+        const uint16x8_t b8 = vorrq_u16(vshlq_n_u16(b5, 3), vshrq_n_u16(b5, 2));
+        uint8x8x4_t rgba;
+        rgba.val[0] = vmovn_u16(r8);
+        rgba.val[1] = vmovn_u16(g8);
+        rgba.val[2] = vmovn_u16(b8);
+        rgba.val[3] = vdup_n_u8(255);
+        vst4_u8(dst, rgba);
+    }
+    for (; i < count; i++, src += 2, dst += 4) {
+        const auto abgr = DecodeRGB565(src);
+        std::memcpy(dst, abgr.AsArray(), 4);
+    }
+}
+
+inline void DecodeRGB5A1Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8, src += 16, dst += 32) {
+        const uint16x8_t pixels = vld1q_u16(reinterpret_cast<const u16*>(src));
+        const uint16x8_t r5 = vandq_u16(vshrq_n_u16(pixels, 11), vdupq_n_u16(0x1F));
+        const uint16x8_t g5 = vandq_u16(vshrq_n_u16(pixels, 6), vdupq_n_u16(0x1F));
+        const uint16x8_t b5 = vandq_u16(vshrq_n_u16(pixels, 1), vdupq_n_u16(0x1F));
+        const uint16x8_t a1 = vandq_u16(pixels, vdupq_n_u16(0x1));
+        const uint16x8_t r8 = vorrq_u16(vshlq_n_u16(r5, 3), vshrq_n_u16(r5, 2));
+        const uint16x8_t g8 = vorrq_u16(vshlq_n_u16(g5, 3), vshrq_n_u16(g5, 2));
+        const uint16x8_t b8 = vorrq_u16(vshlq_n_u16(b5, 3), vshrq_n_u16(b5, 2));
+        uint8x8x4_t rgba;
+        rgba.val[0] = vmovn_u16(r8);
+        rgba.val[1] = vmovn_u16(g8);
+        rgba.val[2] = vmovn_u16(b8);
+        rgba.val[3] = vmul_u8(vmovn_u16(a1), vdup_n_u8(255));
+        vst4_u8(dst, rgba);
+    }
+    for (; i < count; i++, src += 2, dst += 4) {
+        const auto abgr = DecodeRGB5A1(src);
+        std::memcpy(dst, abgr.AsArray(), 4);
+    }
+}
+
+inline void DecodeRGBA4Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8, src += 16, dst += 32) {
+        const uint16x8_t pixels = vld1q_u16(reinterpret_cast<const u16*>(src));
+        const uint16x8_t r4 = vandq_u16(vshrq_n_u16(pixels, 12), vdupq_n_u16(0xF));
+        const uint16x8_t g4 = vandq_u16(vshrq_n_u16(pixels, 8), vdupq_n_u16(0xF));
+        const uint16x8_t b4 = vandq_u16(vshrq_n_u16(pixels, 4), vdupq_n_u16(0xF));
+        const uint16x8_t a4 = vandq_u16(pixels, vdupq_n_u16(0xF));
+        const auto nibble = [](uint16x8_t v) -> uint8x8_t {
+            const uint8x8_t lo = vmovn_u16(v);
+            return vorr_u8(lo, vshl_n_u8(lo, 4));
+        };
+        uint8x8x4_t rgba;
+        rgba.val[0] = nibble(r4);
+        rgba.val[1] = nibble(g4);
+        rgba.val[2] = nibble(b4);
+        rgba.val[3] = nibble(a4);
+        vst4_u8(dst, rgba);
+    }
+    for (; i < count; i++, src += 2, dst += 4) {
+        const auto abgr = DecodeRGBA4(src);
+        std::memcpy(dst, abgr.AsArray(), 4);
+    }
+}
+
+inline void DecodeRGBA8Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 4 <= count; i += 4, src += 16, dst += 16) {
+        const uint8x16x4_t loaded = vld4q_u8(src);
+        uint8x16x4_t rgba;
+        rgba.val[0] = loaded.val[3];
+        rgba.val[1] = loaded.val[2];
+        rgba.val[2] = loaded.val[1];
+        rgba.val[3] = loaded.val[0];
+        vst4q_u8(dst, rgba);
+    }
+    for (; i < count; i++, src += 4, dst += 4) {
+        const auto abgr = DecodeRGBA8(src);
+        std::memcpy(dst, abgr.AsArray(), 4);
+    }
+}
+
+inline void DecodeRGB8Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8, src += 24, dst += 32) {
+        const uint8x8x3_t rgb = vld3_u8(src);
+        uint8x8x4_t rgba;
+        rgba.val[0] = rgb.val[2];
+        rgba.val[1] = rgb.val[1];
+        rgba.val[2] = rgb.val[0];
+        rgba.val[3] = vdup_n_u8(255);
+        vst4_u8(dst, rgba);
+    }
+    for (; i < count; i++, src += 3, dst += 4) {
+        const auto abgr = DecodeRGB8(src);
+        std::memcpy(dst, abgr.AsArray(), 4);
+    }
+}
+
+inline void DecodeD24S8Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 4 <= count; i += 4, src += 16, dst += 16) {
+        vst1q_u8(dst, vrev32q_u8(vld1q_u8(src)));
+    }
+    for (; i < count; i++, src += 4, dst += 4) {
+        u32 val;
+        std::memcpy(&val, src, sizeof(u32));
+        val = std::rotl(val, 8);
+        std::memcpy(dst, &val, sizeof(u32));
+    }
+}
+
+inline void EncodeRGB565Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8, src += 32, dst += 16) {
+        const uint8x8x4_t rgba = vld4_u8(src);
+        const uint16x8_t r5 = vshrq_n_u16(vmovl_u8(rgba.val[0]), 3);
+        const uint16x8_t g6 = vshrq_n_u16(vmovl_u8(rgba.val[1]), 2);
+        const uint16x8_t b5 = vshrq_n_u16(vmovl_u8(rgba.val[2]), 3);
+        vst1q_u16(reinterpret_cast<u16*>(dst),
+                   vorrq_u16(vorrq_u16(vshlq_n_u16(r5, 11), vshlq_n_u16(g6, 5)), b5));
+    }
+    for (; i < count; i++, src += 4, dst += 2) {
+        Common::Vec4<u8> rgba;
+        std::memcpy(rgba.AsArray(), src, 4);
+        EncodeRGB565(rgba, dst);
+    }
+}
+
+inline void EncodeRGBA4Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8, src += 32, dst += 16) {
+        const uint8x8x4_t rgba = vld4_u8(src);
+        const uint16x8_t r4 = vshrq_n_u16(vmovl_u8(rgba.val[0]), 4);
+        const uint16x8_t g4 = vshrq_n_u16(vmovl_u8(rgba.val[1]), 4);
+        const uint16x8_t b4 = vshrq_n_u16(vmovl_u8(rgba.val[2]), 4);
+        const uint16x8_t a4 = vshrq_n_u16(vmovl_u8(rgba.val[3]), 4);
+        vst1q_u16(reinterpret_cast<u16*>(dst),
+                   vorrq_u16(vorrq_u16(vshlq_n_u16(r4, 12), vshlq_n_u16(g4, 8)),
+                             vorrq_u16(vshlq_n_u16(b4, 4), a4)));
+    }
+    for (; i < count; i++, src += 4, dst += 2) {
+        Common::Vec4<u8> rgba;
+        std::memcpy(rgba.AsArray(), src, 4);
+        EncodeRGBA4(rgba, dst);
+    }
+}
+
+inline void EncodeD24S8Batch(const u8* src, u8* dst, size_t count) {
+    size_t i = 0;
+    for (; i + 4 <= count; i += 4, src += 16, dst += 16) {
+        vst1q_u8(dst, vrev32q_u8(vld1q_u8(src)));
+    }
+    for (; i < count; i++, src += 4, dst += 4) {
+        u32 val;
+        std::memcpy(&val, src, sizeof(u32));
+        val = std::rotr(val, 8);
+        std::memcpy(dst, &val, sizeof(u32));
+    }
+}
+
+} // namespace Common::Color::NEON
+#endif

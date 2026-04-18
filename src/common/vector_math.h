@@ -679,6 +679,14 @@ constexpr decltype(T{} * T{} + T{} * T{}) Dot(const Vec2<T>& a, const Vec2<T>& b
 
 template <typename T>
 [[nodiscard]] constexpr decltype(T{} * T{} + T{} * T{}) Dot(const Vec3<T>& a, const Vec3<T>& b) {
+#if defined(__ARM_NEON) && defined(__aarch64__)
+    if constexpr (std::is_same_v<T, float>) {
+        float32x4_t va = vld1q_f32(a.AsArray());
+        float32x4_t vb = vld1q_f32(b.AsArray());
+        float32x4_t prod = vmulq_f32(va, vb);
+        return vaddvq_f32(prod);
+    }
+#endif
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 

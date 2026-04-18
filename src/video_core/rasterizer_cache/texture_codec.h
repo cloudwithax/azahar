@@ -203,6 +203,78 @@ constexpr void MortonCopyTile(u32 stride, std::span<u8> tile_buffer, std::span<u
     constexpr bool is_compressed = format == PixelFormat::ETC1 || format == PixelFormat::ETC1A4;
     constexpr bool is_4bit = format == PixelFormat::I4 || format == PixelFormat::A4;
 
+#if defined(__ARM_NEON)
+    if constexpr (morton_to_linear && !is_compressed && !is_4bit && converted &&
+                  (format == PixelFormat::RGB565 || format == PixelFormat::RGB5A1 ||
+                   format == PixelFormat::RGBA4 || format == PixelFormat::RGBA8 ||
+                   format == PixelFormat::RGB8 || format == PixelFormat::D24S8)) {
+        for (u32 y = 0; y < 8; y++) {
+            const u8* row_src = tile_buffer.data();
+            u8* row_dst = linear_buffer.data() + ((7 - y) * stride) * linear_bytes_per_pixel;
+            u8 temp_src[8 * 4];
+            u8 temp_dst[8 * 4];
+
+            for (u32 x = 0; x < 8; x++) {
+                const u32 morton = VideoCore::MortonInterleave(x, y);
+                std::memcpy(temp_src + x * bytes_per_pixel,
+                             tile_buffer.data() + morton * bytes_per_pixel,
+                             bytes_per_pixel);
+            }
+
+            if constexpr (format == PixelFormat::RGB565) {
+                Common::Color::NEON::DecodeRGB565Batch(temp_src, temp_dst, 8);
+            } else if constexpr (format == PixelFormat::RGB5A1) {
+                Common::Color::NEON::DecodeRGB5A1Batch(temp_src, temp_dst, 8);
+            } else if constexpr (format == PixelFormat::RGBA4) {
+                Common::Color::NEON::DecodeRGBA4Batch(temp_src, temp_dst, 8);
+            } else if constexpr (format == PixelFormat::RGBA8) {
+                Common::Color::NEON::DecodeRGBA8Batch(temp_src, temp_dst, 8);
+            } else if constexpr (format == PixelFormat::RGB8) {
+                Common::Color::NEON::DecodeRGB8Batch(temp_src, temp_dst, 8);
+            } else if constexpr (format == PixelFormat::D24S8) {
+                Common::Color::NEON::DecodeD24S8Batch(temp_src, temp_dst, 8);
+            }
+
+            for (u32 x = 0; x < 8; x++) {
+                std::memcpy(row_dst + x * linear_bytes_per_pixel,
+                             temp_dst + x * linear_bytes_per_pixel,
+                             linear_bytes_per_pixel);
+            }
+        }
+        return;
+    }
+    if constexpr (!morton_to_linear && !is_compressed && !is_4bit && converted &&
+                  (format == PixelFormat::RGB565 || format == PixelFormat::RGBA4 ||
+                   format == PixelFormat::D24S8)) {
+        for (u32 y = 0; y < 8; y++) {
+            u8 temp_src[8 * 4];
+            u8 temp_dst[8 * 2];
+
+            for (u32 x = 0; x < 8; x++) {
+                const u8* linear_pixel = linear_buffer.data() +
+                    ((7 - y) * stride + x) * linear_bytes_per_pixel;
+                std::memcpy(temp_src + x * 4, linear_pixel, 4);
+            }
+
+            if constexpr (format == PixelFormat::RGB565) {
+                Common::Color::NEON::EncodeRGB565Batch(temp_src, temp_dst, 8);
+            } else if constexpr (format == PixelFormat::RGBA4) {
+                Common::Color::NEON::EncodeRGBA4Batch(temp_src, temp_dst, 8);
+            } else if constexpr (format == PixelFormat::D24S8) {
+                Common::Color::NEON::EncodeD24S8Batch(temp_src, temp_dst, 8);
+            }
+
+            for (u32 x = 0; x < 8; x++) {
+                const u32 morton = VideoCore::MortonInterleave(x, y);
+                std::memcpy(tile_buffer.data() + morton * bytes_per_pixel,
+                             temp_dst + x * bytes_per_pixel,
+                             bytes_per_pixel);
+            }
+        }
+        return;
+    }
+#endif
+
     for (u32 y = 0; y < 8; y++) {
         for (u32 x = 0; x < 8; x++) {
             const auto tiled_pixel = tile_buffer.subspan(
@@ -354,6 +426,46 @@ static constexpr void LinearCopy(std::span<u8> src_buffer, std::span<u8> dst_buf
 
         src_size = Common::AlignDown(src_size, src_bytes_per_pixel);
         dst_size = Common::AlignDown(dst_size, dst_bytes_per_pixel);
+
+#if defined(__ARM_NEON)
+        if constexpr (decode) {
+            constexpr size_t pixel_count_max = std::numeric_limits<size_t>::max();
+            const size_t pixel_count = std::min(src_size / src_bytes_per_pixel,
+                                                 dst_size / dst_bytes_per_pixel);
+            if constexpr (format == PixelFormat::RGB565) {
+                Common::Color::NEON::DecodeRGB565Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            } else if constexpr (format == PixelFormat::RGB5A1) {
+                Common::Color::NEON::DecodeRGB5A1Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            } else if constexpr (format == PixelFormat::RGBA4) {
+                Common::Color::NEON::DecodeRGBA4Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            } else if constexpr (format == PixelFormat::RGBA8) {
+                Common::Color::NEON::DecodeRGBA8Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            } else if constexpr (format == PixelFormat::RGB8) {
+                Common::Color::NEON::DecodeRGB8Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            } else if constexpr (format == PixelFormat::D24S8) {
+                Common::Color::NEON::DecodeD24S8Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            }
+        } else {
+            const size_t pixel_count = std::min(src_size / src_bytes_per_pixel,
+                                                 dst_size / dst_bytes_per_pixel);
+            if constexpr (format == PixelFormat::RGB565) {
+                Common::Color::NEON::EncodeRGB565Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            } else if constexpr (format == PixelFormat::RGBA4) {
+                Common::Color::NEON::EncodeRGBA4Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            } else if constexpr (format == PixelFormat::D24S8) {
+                Common::Color::NEON::EncodeD24S8Batch(src_buffer.data(), dst_buffer.data(), pixel_count);
+                return;
+            }
+        }
+#endif
 
         for (std::size_t src_index = 0, dst_index = 0; src_index < src_size && dst_index < dst_size;
              src_index += src_bytes_per_pixel, dst_index += dst_bytes_per_pixel) {

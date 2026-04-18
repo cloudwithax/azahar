@@ -314,6 +314,26 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     config.processor_id = GetID();
     config.global_monitor = &exclusive_monitor.monitor;
 
+    // 3DS is always little-endian — skip endianness checks in the JIT
+    config.always_little_endian = true;
+
+    // Enable unsafe optimizations for speed on ARM (particularly beneficial
+    // on in-order cores like Cortex-A55 where every saved instruction matters)
+    config.unsafe_optimizations = true;
+
+    // Fastmem: direct memory access via host virtual address space, falling back
+    // to page table on SIGSEGV. On Cortex-A55 (in-order, 32KB L1D), the page
+    // table path costs 2+ loads per access vs 1 load with fastmem — a major
+    // speedup on memory-heavy emulator workloads.
+    auto fastmem_base = memory.GetFastmemBase();
+    if (fastmem_base) {
+        config.fastmem_pointer = fastmem_base;
+        config.fastmem_exclusive_access = true;
+    }
+
+    constexpr size_t code_cache_size_mobile = 64 * 1024 * 1024;
+    config.code_cache_size = code_cache_size_mobile;
+
     return std::make_unique<Dynarmic::A32::Jit>(config);
 }
 

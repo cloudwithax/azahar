@@ -11,6 +11,10 @@
 #include "video_core/renderer_software/sw_blitter.h"
 #include "video_core/utils.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 namespace SwRenderer {
 
 static Common::Vec4<u8> DecodePixel(Pica::PixelFormat input_format, const u8* src_pixel) {
@@ -317,29 +321,77 @@ void SwBlitter::MemoryFill(const Pica::MemoryFillConfig& config) {
     u8* end = memory.GetPhysicalPointer(end_addr);
 
     rasterizer->InvalidateRegion(start_addr, end_addr - start_addr);
+    const std::size_t total_size = end - start;
 
     if (config.fill_24bit) {
-        // Fill with 24-bit values
+#if defined(__ARM_NEON)
+        const u8 r = config.value_24bit_r, g = config.value_24bit_g, b = config.value_24bit_b;
+        alignas(16) const u8 pattern_arr[16] = {r, g, b, r, g, b, r, g, b, r, g, b, r, g, b, r};
+        const uint8x16_t pattern = vld1q_u8(pattern_arr);
+        u8* ptr = start;
+        for (; ptr + 16 <= end; ptr += 16) {
+            vst1q_u8(ptr, pattern);
+        }
+        for (; ptr + 3 <= end; ptr += 3) {
+            ptr[0] = r;
+            ptr[1] = g;
+            ptr[2] = b;
+        }
+#else
         for (u8* ptr = start; ptr < end; ptr += 3) {
             ptr[0] = config.value_24bit_r;
             ptr[1] = config.value_24bit_g;
             ptr[2] = config.value_24bit_b;
         }
+#endif
     } else if (config.fill_32bit) {
-        // Fill with 32-bit values
-        if (end > start) {
+#if defined(__ARM_NEON)
+        if (total_size >= 16) {
+            const uint32x4_t pattern = vdupq_n_u32(config.value_32bit);
+            u8* ptr = start;
+            const u8* vec_end = start + (total_size & ~size_t(15));
+            for (; ptr < vec_end; ptr += 16) {
+                vst1q_u32(reinterpret_cast<u32*>(ptr), pattern);
+            }
+            const std::size_t remaining = end - ptr;
+            for (std::size_t i = 0; i < remaining / sizeof(u32); ++i) {
+                std::memcpy(ptr + i * sizeof(u32), &config.value_32bit, sizeof(u32));
+            }
+        } else if (total_size > 0) {
+            const std::size_t len = total_size / sizeof(u32);
+            for (std::size_t i = 0; i < len; ++i) {
+                std::memcpy(&start[i * sizeof(u32)], &config.value_32bit, sizeof(u32));
+            }
+        }
+#else
+        if (total_size > 0) {
             const u32 value = config.value_32bit;
-            const std::size_t len = (end - start) / sizeof(u32);
+            const std::size_t len = total_size / sizeof(u32);
             for (std::size_t i = 0; i < len; ++i) {
                 std::memcpy(&start[i * sizeof(u32)], &value, sizeof(u32));
             }
         }
+#endif
     } else {
-        // Fill with 16-bit values
+#if defined(__ARM_NEON)
+        {
+            const uint16x8_t pattern = vdupq_n_u16(config.value_16bit.Value());
+            u8* ptr = start;
+            const u8* vec_end = start + (total_size & ~size_t(15));
+            for (; ptr < vec_end; ptr += 16) {
+                vst1q_u16(reinterpret_cast<u16*>(ptr), pattern);
+            }
+            const u16 val16 = config.value_16bit.Value();
+            for (; ptr + 2 <= end; ptr += 2) {
+                std::memcpy(ptr, &val16, sizeof(u16));
+            }
+        }
+#else
         const u16 value_16bit = config.value_16bit.Value();
         for (u8* ptr = start; ptr < end; ptr += sizeof(u16)) {
             std::memcpy(ptr, &value_16bit, sizeof(u16));
         }
+#endif
     }
 }
 

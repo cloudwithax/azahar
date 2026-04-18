@@ -10,6 +10,10 @@
 #include "common/vector_math.h"
 #include "video_core/texture/etc1.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 namespace Pica::Texture {
 
 namespace {
@@ -70,12 +74,69 @@ union ETC1Tile {
     } separate;
 
     const Common::Vec3<u8> GetRGB(unsigned int x, unsigned int y) const {
+#if defined(__ARM_NEON)
         int texel = 4 * x + y;
 
         if (flip)
             std::swap(x, y);
 
-        // Lookup base value
+        Common::Vec3<int> ret;
+        if (differential_mode) {
+            ret.r() = static_cast<int>(differential.r);
+            ret.g() = static_cast<int>(differential.g);
+            ret.b() = static_cast<int>(differential.b);
+            if (x >= 2) {
+                ret.r() += static_cast<int>(differential.dr);
+                ret.g() += static_cast<int>(differential.dg);
+                ret.b() += static_cast<int>(differential.db);
+            }
+            const int16x8_t v5 = vdupq_n_s16(0);
+            int16x8_t v5_r = vdupq_n_s16(static_cast<int16_t>(ret.r()));
+            int16x8_t v5_g = vdupq_n_s16(static_cast<int16_t>(ret.g()));
+            int16x8_t v5_b = vdupq_n_s16(static_cast<int16_t>(ret.b()));
+            v5_r = vorrq_s16(vshlq_n_s16(v5_r, 3), vshrq_n_s16(v5_r, 2));
+            v5_g = vorrq_s16(vshlq_n_s16(v5_g, 2), vshrq_n_s16(v5_g, 4));
+            v5_b = vorrq_s16(vshlq_n_s16(v5_b, 3), vshrq_n_s16(v5_b, 2));
+            ret.r() = vgetq_lane_s16(v5_r, 0);
+            ret.g() = vgetq_lane_s16(v5_g, 0);
+            ret.b() = vgetq_lane_s16(v5_b, 0);
+        } else {
+            if (x < 2) {
+                ret.r() = Common::Color::Convert4To8(static_cast<u8>(separate.r1));
+                ret.g() = Common::Color::Convert4To8(static_cast<u8>(separate.g1));
+                ret.b() = Common::Color::Convert4To8(static_cast<u8>(separate.b1));
+            } else {
+                ret.r() = Common::Color::Convert4To8(static_cast<u8>(separate.r2));
+                ret.g() = Common::Color::Convert4To8(static_cast<u8>(separate.g2));
+                ret.b() = Common::Color::Convert4To8(static_cast<u8>(separate.b2));
+            }
+        }
+
+        unsigned table_index =
+            static_cast<int>((x < 2) ? table_index_1.Value() : table_index_2.Value());
+
+        int modifier = etc1_modifier_table[table_index][GetTableSubIndex(texel)];
+        if (GetNegationFlag(texel))
+            modifier *= -1;
+
+        const int16x4_t base = {static_cast<int16_t>(ret.r()),
+                                 static_cast<int16_t>(ret.g()),
+                                 static_cast<int16_t>(ret.b()), 0};
+        const int16x4_t mod = {static_cast<int16_t>(modifier),
+                                static_cast<int16_t>(modifier),
+                                static_cast<int16_t>(modifier), 0};
+        const int16x4_t added = vadd_s16(base, mod);
+        const uint16x4_t clamped = vqmovun_s32(vmovl_s16(added));
+
+        return Common::Vec3<u8>{static_cast<u8>(vget_lane_u16(clamped, 0)),
+                                 static_cast<u8>(vget_lane_u16(clamped, 1)),
+                                 static_cast<u8>(vget_lane_u16(clamped, 2))};
+#else
+        int texel = 4 * x + y;
+
+        if (flip)
+            std::swap(x, y);
+
         Common::Vec3<int> ret;
         if (differential_mode) {
             ret.r() = static_cast<int>(differential.r);
@@ -101,7 +162,6 @@ union ETC1Tile {
             }
         }
 
-        // Add modifier
         unsigned table_index =
             static_cast<int>((x < 2) ? table_index_1.Value() : table_index_2.Value());
 
@@ -114,6 +174,7 @@ union ETC1Tile {
         ret.b() = std::clamp(ret.b() + modifier, 0, 255);
 
         return ret.Cast<u8>();
+#endif
     }
 };
 

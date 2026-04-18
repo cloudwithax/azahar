@@ -484,6 +484,8 @@ add_library(citra_core STATIC
     loader/smdh.h
     memory.cpp
     memory.h
+    memory_fastmem.cpp
+    memory_fastmem.h
     movie.cpp
     movie.h
     nus_download.cpp
@@ -545,4 +547,11 @@ endif()
 
 if (CITRA_USE_PRECOMPILED_HEADERS)
     target_precompile_headers(citra_core PRIVATE precompiled_headers.h)
+endif()
+
+if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    set_source_files_properties(memory.cpp PROPERTIES COMPILE_FLAGS -O3)
+    set_source_files_properties(arm/dynarmic/arm_dynarmic.cpp PROPERTIES COMPILE_FLAGS -O3)
+    set_source_files_properties(hle/kernel/svc.cpp PROPERTIES COMPILE_FLAGS -O3)
+    set_source_files_properties(hw/y2r.cpp PROPERTIES COMPILE_FLAGS -O3)
 endif()

@@ -5,6 +5,7 @@
 #pragma once
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <boost/serialization/array.hpp>
 #include <boost/serialization/vector.hpp>
@@ -33,6 +34,14 @@ constexpr u32 CITRA_PAGE_SIZE = 0x1000;
 constexpr u32 CITRA_PAGE_MASK = CITRA_PAGE_SIZE - 1;
 constexpr int CITRA_PAGE_BITS = 12;
 constexpr std::size_t PAGE_TABLE_NUM_ENTRIES = 1 << (32 - CITRA_PAGE_BITS);
+
+#if defined(__aarch64__)
+constexpr u32 L1_PAGE_BITS = 22;
+constexpr u32 L1_PAGE_SIZE = 1U << L1_PAGE_BITS;
+constexpr u32 L2_PAGE_BITS = CITRA_PAGE_BITS;
+constexpr std::size_t L1_PAGE_TABLE_NUM_ENTRIES = 1U << (32 - L1_PAGE_BITS);
+constexpr std::size_t L2_PAGE_TABLE_NUM_ENTRIES = 1U << (L1_PAGE_BITS - L2_PAGE_BITS);
+#endif
 
 enum class PageType {
     /// Page is unmapped and should cause an access error.
@@ -89,6 +98,10 @@ struct PageTable {
     };
 
     Pointers pointers;
+
+#if defined(__aarch64__)
+    std::array<u8**, L1_PAGE_TABLE_NUM_ENTRIES> l1_pointers{};
+#endif
 
     /**
      * Array of fine grained page attributes. If it is set to any value other than `Memory`, then
@@ -649,6 +662,12 @@ public:
     u8* GetDspMemory(std::size_t offset) const;
 
     void RasterizerFlushVirtualRegion(VAddr start, u32 size, FlushMode mode);
+
+    std::optional<uintptr_t> GetFastmemBase() const;
+
+    void FastmemMapRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target);
+    void FastmemUnmapRegion(PageTable& page_table, VAddr base, u32 size);
+    void FastmemSetRasterizerCached(PAddr start, u32 size, bool cached);
 
     /// Returns a reference to the framebuffer address of the currently loaded 3GX plugin.
     PAddr& Plugin3GXFramebufferAddress();

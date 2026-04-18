@@ -4,6 +4,11 @@
 
 #include <array>
 #include <cstring>
+
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 #include <boost/serialization/array.hpp>
 #include <boost/serialization/binary_object.hpp>
 #include "audio_core/dsp_interface.h"
@@ -20,6 +25,7 @@
 #include "core/hle/kernel/process.h"
 #include "core/hle/service/plgldr/plgldr.h"
 #include "core/memory.h"
+#include "core/memory_fastmem.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
 
@@ -34,6 +40,9 @@ void PageTable::Clear() {
     pointers.raw.fill(nullptr);
     pointers.refs.fill(MemoryRef());
     attributes.fill(PageType::Unmapped);
+#if defined(__aarch64__)
+    l1_pointers.fill(nullptr);
+#endif
 }
 
 class RasterizerCacheMarker {
@@ -105,6 +114,8 @@ public:
 
     PAddr plugin_fb_address{};
 
+    std::unique_ptr<FastMemManager> fastmem;
+
     Impl(Core::System& system_);
 
     const u8* GetPtr(Region r) const {
@@ -165,6 +176,11 @@ public:
         std::size_t page_index = src_addr >> CITRA_PAGE_BITS;
         std::size_t page_offset = src_addr & CITRA_PAGE_MASK;
 
+#if defined(__aarch64__)
+        __builtin_prefetch(&page_table.attributes[page_index], 0, 1);
+        __builtin_prefetch(&page_table.GetPointerArray()[page_index], 0, 1);
+#endif
+
         while (remaining_size > 0) {
             const std::size_t copy_amount = std::min(CITRA_PAGE_SIZE - page_offset, remaining_size);
             const VAddr current_vaddr =
@@ -184,7 +200,27 @@ public:
                 DEBUG_ASSERT(page_table.pointers[page_index]);
 
                 const u8* src_ptr = page_table.pointers[page_index] + page_offset;
+#if defined(__ARM_NEON)
+                {
+                    size_t remaining = copy_amount;
+                    const u8* s = src_ptr;
+                    u8* d = static_cast<u8*>(dest_buffer);
+                    for (; remaining >= 64; s += 64, d += 64, remaining -= 64) {
+                        vst1q_u8(d, vld1q_u8(s));
+                        vst1q_u8(d + 16, vld1q_u8(s + 16));
+                        vst1q_u8(d + 32, vld1q_u8(s + 32));
+                        vst1q_u8(d + 48, vld1q_u8(s + 48));
+                    }
+                    for (; remaining >= 16; s += 16, d += 16, remaining -= 16) {
+                        vst1q_u8(d, vld1q_u8(s));
+                    }
+                    if (remaining > 0) {
+                        std::memcpy(d, s, remaining);
+                    }
+                }
+#else
                 std::memcpy(dest_buffer, src_ptr, copy_amount);
+#endif
                 break;
             }
             case PageType::RasterizerCachedMemory: {
@@ -232,7 +268,27 @@ public:
                 DEBUG_ASSERT(page_table.pointers[page_index]);
 
                 u8* dest_ptr = page_table.pointers[page_index] + page_offset;
+#if defined(__ARM_NEON)
+                {
+                    size_t remaining = copy_amount;
+                    const u8* s = static_cast<const u8*>(src_buffer);
+                    u8* d = dest_ptr;
+                    for (; remaining >= 64; s += 64, d += 64, remaining -= 64) {
+                        vst1q_u8(d, vld1q_u8(s));
+                        vst1q_u8(d + 16, vld1q_u8(s + 16));
+                        vst1q_u8(d + 32, vld1q_u8(s + 32));
+                        vst1q_u8(d + 48, vld1q_u8(s + 48));
+                    }
+                    for (; remaining >= 16; s += 16, d += 16, remaining -= 16) {
+                        vst1q_u8(d, vld1q_u8(s));
+                    }
+                    if (remaining > 0) {
+                        std::memcpy(d, s, remaining);
+                    }
+                }
+#else
                 std::memcpy(dest_ptr, src_buffer, copy_amount);
+#endif
                 break;
             }
             case PageType::RasterizerCachedMemory: {
@@ -364,7 +420,14 @@ MemorySystem::Impl::Impl(Core::System& system_)
     : system{system_}, fcram_mem(std::make_shared<BackingMemImpl<Region::FCRAM>>(*this)),
       vram_mem(std::make_shared<BackingMemImpl<Region::VRAM>>(*this)),
       n3ds_extra_ram_mem(std::make_shared<BackingMemImpl<Region::N3DS>>(*this)),
-      dsp_mem(std::make_shared<BackingMemImpl<Region::DSP>>(*this)) {}
+      dsp_mem(std::make_shared<BackingMemImpl<Region::DSP>>(*this)),
+      fastmem(std::make_unique<FastMemManager>()) {
+    if (fastmem->IsEnabled()) {
+        fastmem->SetBackingMemory(fcram.get(), Memory::FCRAM_N3DS_SIZE, vram.get(),
+                                  Memory::VRAM_SIZE, dsp_ram.get(), Memory::DSP_RAM_SIZE,
+                                  n3ds_extra_ram.get(), Memory::N3DS_EXTRA_RAM_SIZE);
+    }
+}
 
 MemorySystem::MemorySystem(Core::System& system) : impl(std::make_unique<Impl>(system)) {}
 MemorySystem::~MemorySystem() = default;
@@ -409,11 +472,19 @@ void MemorySystem::MapPages(PageTable& page_table, u32 base, u32 size, MemoryRef
         page_table.attributes[base] = type;
         page_table.pointers[base] = memory;
 
-        // If the memory to map is already rasterizer-cached, mark the page
         if (type == PageType::Memory && impl->cache_marker.IsCached(base * CITRA_PAGE_SIZE)) {
             page_table.attributes[base] = PageType::RasterizerCachedMemory;
             page_table.pointers[base] = nullptr;
         }
+
+#if defined(__aarch64__)
+        const u32 l1_index = base >> (L1_PAGE_BITS - CITRA_PAGE_BITS);
+        if (page_table.pointers[base]) {
+            if (!page_table.l1_pointers[l1_index]) {
+                page_table.l1_pointers[l1_index] = &page_table.GetPointerArray()[base & ~(L2_PAGE_TABLE_NUM_ENTRIES - 1)];
+            }
+        }
+#endif
 
         base += 1;
         if (memory != nullptr && memory.GetSize() > CITRA_PAGE_SIZE)
@@ -425,11 +496,17 @@ void MemorySystem::MapMemoryRegion(PageTable& page_table, VAddr base, u32 size, 
     ASSERT_MSG((size & CITRA_PAGE_MASK) == 0, "non-page aligned size: {:08X}", size);
     ASSERT_MSG((base & CITRA_PAGE_MASK) == 0, "non-page aligned base: {:08X}", base);
     MapPages(page_table, base / CITRA_PAGE_SIZE, size / CITRA_PAGE_SIZE, target, PageType::Memory);
+    if (target && impl->fastmem->IsEnabled()) {
+        impl->fastmem->MapRegion(base, size, target.GetPtr());
+    }
 }
 
 void MemorySystem::UnmapRegion(PageTable& page_table, VAddr base, u32 size) {
     ASSERT_MSG((size & CITRA_PAGE_MASK) == 0, "non-page aligned size: {:08X}", size);
     ASSERT_MSG((base & CITRA_PAGE_MASK) == 0, "non-page aligned base: {:08X}", base);
+    if (impl->fastmem->IsEnabled()) {
+        impl->fastmem->UnmapRegion(base, size);
+    }
     MapPages(page_table, base / CITRA_PAGE_SIZE, size / CITRA_PAGE_SIZE, nullptr,
              PageType::Unmapped);
 }
@@ -451,6 +528,20 @@ void MemorySystem::UnregisterPageTable(std::shared_ptr<PageTable> page_table) {
 
 template <typename T>
 T MemorySystem::Read(const std::shared_ptr<PageTable>& page_table, const VAddr vaddr) {
+#if defined(__aarch64__)
+    const u32 l1_index = vaddr >> L1_PAGE_BITS;
+    u8** l1_ptr = page_table->l1_pointers[l1_index];
+    if (l1_ptr) {
+        const u32 l2_index = (vaddr >> CITRA_PAGE_BITS) & (L2_PAGE_TABLE_NUM_ENTRIES - 1);
+        const u8* page_pointer = l1_ptr[l2_index];
+        if (page_pointer) {
+            T value;
+            std::memcpy(&value, &page_pointer[vaddr & CITRA_PAGE_MASK], sizeof(T));
+            return value;
+        }
+    }
+#endif
+
     const u8* page_pointer = page_table->pointers[vaddr >> CITRA_PAGE_BITS];
     if (page_pointer) {
         // NOTE: Avoid adding any extra logic to this fast-path block
@@ -500,6 +591,19 @@ T MemorySystem::Read(const std::shared_ptr<PageTable>& page_table, const VAddr v
 template <typename T>
 void MemorySystem::Write(const std::shared_ptr<PageTable>& page_table, const VAddr vaddr,
                          const T data) {
+#if defined(__aarch64__)
+    const u32 l1_index = vaddr >> L1_PAGE_BITS;
+    u8** l1_ptr = page_table->l1_pointers[l1_index];
+    if (l1_ptr) {
+        const u32 l2_index = (vaddr >> CITRA_PAGE_BITS) & (L2_PAGE_TABLE_NUM_ENTRIES - 1);
+        u8* page_pointer = l1_ptr[l2_index];
+        if (page_pointer) {
+            std::memcpy(&page_pointer[vaddr & CITRA_PAGE_MASK], &data, sizeof(T));
+            return;
+        }
+    }
+#endif
+
     u8* page_pointer = page_table->pointers[vaddr >> CITRA_PAGE_BITS];
     if (page_pointer) {
         // NOTE: Avoid adding any extra logic to this fast-path block
@@ -745,30 +849,32 @@ void MemorySystem::RasterizerMarkRegionCached(PAddr start, u32 size, bool cached
                 PageType& page_type = page_table->attributes[vaddr >> CITRA_PAGE_BITS];
 
                 if (cached) {
-                    // Switch page type to cached if now cached
                     switch (page_type) {
                     case PageType::Unmapped:
-                        // It is not necessary for a process to have this region mapped into its
-                        // address space, for example, a system module need not have a VRAM mapping.
                         break;
                     case PageType::Memory:
                         page_type = PageType::RasterizerCachedMemory;
                         page_table->pointers[vaddr >> CITRA_PAGE_BITS] = nullptr;
+                        if (impl->fastmem->IsEnabled()) {
+                            impl->fastmem->ReprotectPage(
+                                vaddr & ~CITRA_PAGE_MASK, false);
+                        }
                         break;
                     default:
                         UNREACHABLE();
                     }
                 } else {
-                    // Switch page type to uncached if now uncached
                     switch (page_type) {
                     case PageType::Unmapped:
-                        // It is not necessary for a process to have this region mapped into its
-                        // address space, for example, a system module need not have a VRAM mapping.
                         break;
                     case PageType::RasterizerCachedMemory: {
                         page_type = PageType::Memory;
                         page_table->pointers[vaddr >> CITRA_PAGE_BITS] =
                             GetPointerForRasterizerCache(vaddr & ~CITRA_PAGE_MASK);
+                        if (impl->fastmem->IsEnabled()) {
+                            impl->fastmem->ReprotectPage(
+                                vaddr & ~CITRA_PAGE_MASK, true);
+                        }
                         break;
                     }
                     default:
@@ -999,6 +1105,29 @@ MemoryRef MemorySystem::GetFCRAMRef(std::size_t offset) const {
 u8* MemorySystem::GetDspMemory(std::size_t offset) const {
     ASSERT(offset <= Memory::DSP_RAM_SIZE);
     return impl->dsp_ram.get() + offset;
+}
+
+std::optional<uintptr_t> MemorySystem::GetFastmemBase() const {
+    return impl->fastmem->GetFastmemBase();
+}
+
+void MemorySystem::FastmemMapRegion(PageTable& page_table, VAddr base, u32 size,
+                                    MemoryRef target) {
+    if (impl->fastmem->IsEnabled() && target) {
+        impl->fastmem->MapRegion(base, size, target.GetPtr());
+    }
+}
+
+void MemorySystem::FastmemUnmapRegion(PageTable& page_table, VAddr base, u32 size) {
+    if (impl->fastmem->IsEnabled()) {
+        impl->fastmem->UnmapRegion(base, size);
+    }
+}
+
+void MemorySystem::FastmemSetRasterizerCached(PAddr start, u32 size, bool cached) {
+    if (impl->fastmem->IsEnabled()) {
+        impl->fastmem->SetRasterizerCached(start, size, cached);
+    }
 }
 
 } // namespace Memory

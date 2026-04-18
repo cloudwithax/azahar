@@ -4,6 +4,10 @@
 
 #include <boost/container/static_vector.hpp>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 #include "common/common_paths.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
@@ -399,7 +403,27 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     // static pipeline state hasn't changed (common for consecutive draws
     // with the same shader/blend/depth config), reuse the cached pointer.
     GraphicsPipeline* pipeline;
-    if (cached_pipeline && std::memcmp(&info.state, &cached_pipeline_state, sizeof(info.state)) == 0) {
+    bool state_matches = false;
+    if (cached_pipeline) {
+#if defined(__ARM_NEON)
+        const u8* a = reinterpret_cast<const u8*>(&info.state);
+        const u8* b = reinterpret_cast<const u8*>(&cached_pipeline_state);
+        const size_t cmp_size = sizeof(info.state);
+        state_matches = true;
+        for (size_t i = 0; i < cmp_size; i += 16) {
+            const uint8x16_t va = vld1q_u8(a + i);
+            const uint8x16_t vb = vld1q_u8(b + i);
+            if (vmaxvq_u8(veorq_u8(va, vb)) != 0) {
+                state_matches = false;
+                break;
+            }
+        }
+#else
+        state_matches = std::memcmp(&info.state, &cached_pipeline_state, sizeof(info.state)) == 0;
+#endif
+    }
+
+    if (state_matches) {
         pipeline = cached_pipeline;
     } else {
         pipeline = curr_disk_cache->GetPipeline(info);

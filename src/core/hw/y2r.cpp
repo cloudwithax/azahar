@@ -16,6 +16,10 @@
 #include "core/hw/y2r.h"
 #include "core/memory.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 namespace HW::Y2R {
 
 using namespace Service::Y2R;
@@ -27,9 +31,117 @@ using ImageTile = std::array<u32, TILE_SIZE>;
 /// Converts a image strip from the source YUV format into individual 8x8 RGB32 tiles.
 template <InputFormat input_format>
 static void ConvertYUVToRGB(const u8* input_Y, const u8* input_U, const u8* input_V,
-                            ImageTile output[], unsigned int width, unsigned int height,
-                            const CoefficientSet& coefficients) {
+                             ImageTile output[], unsigned int width, unsigned int height,
+                             const CoefficientSet& coefficients) {
 
+#if defined(__ARM_NEON)
+    const int32x4_t c0 = vdupq_n_s32(coefficients[0]);
+    const int32x4_t c1 = vdupq_n_s32(coefficients[1]);
+    const int32x4_t c2 = vdupq_n_s32(coefficients[2]);
+    const int32x4_t c3 = vdupq_n_s32(coefficients[3]);
+    const int32x4_t c4 = vdupq_n_s32(coefficients[4]);
+    const int32x4_t c5 = vdupq_n_s32(coefficients[5]);
+    const int32x4_t c6 = vdupq_n_s32(coefficients[6]);
+    const int32x4_t c7 = vdupq_n_s32(coefficients[7]);
+    const int32x4_t rounding = vdupq_n_s32(0x18);
+    const uint32x4_t mask_8 = vdupq_n_u32(0xFF);
+
+    for (unsigned int y = 0; y < height; ++y) {
+        unsigned int x = 0;
+        for (; x + 4 <= width; x += 4) {
+            s32 Yv[4], Uv[4], Vv[4];
+            for (int i = 0; i < 4; i++) {
+                if constexpr (input_format == InputFormat::YUV422_Indiv8 ||
+                              input_format == InputFormat::YUV422_Indiv16) {
+                    Yv[i] = input_Y[y * width + x + i];
+                    Uv[i] = input_U[(y * width + x + i) / 2];
+                    Vv[i] = input_V[(y * width + x + i) / 2];
+                } else if constexpr (input_format == InputFormat::YUV420_Indiv8 ||
+                                      input_format == InputFormat::YUV420_Indiv16) {
+                    Yv[i] = input_Y[y * width + x + i];
+                    Uv[i] = input_U[((y / 2) * width + x + i) / 2];
+                    Vv[i] = input_V[((y / 2) * width + x + i) / 2];
+                } else if constexpr (input_format == InputFormat::YUYV422_Interleaved) {
+                    Yv[i] = input_Y[(y * width + x + i) * 2];
+                    Uv[i] = input_Y[(y * width + (x + i) / 2 * 2) * 2 + 1];
+                    Vv[i] = input_Y[(y * width + (x + i) / 2 * 2) * 2 + 3];
+                }
+            }
+
+            int32x4_t Y4 = vld1q_s32(Yv);
+            int32x4_t U4 = vld1q_s32(Uv);
+            int32x4_t V4 = vld1q_s32(Vv);
+
+            int32x4_t cY = vmulq_s32(c0, Y4);
+            int32x4_t r = vaddq_s32(cY, vmulq_s32(c1, V4));
+            int32x4_t g = vsubq_s32(vsubq_s32(cY, vmulq_s32(c2, V4)), vmulq_s32(c3, U4));
+            int32x4_t b = vaddq_s32(cY, vmulq_s32(c4, U4));
+
+            r = vaddq_s32(vshrq_n_s32(r, 3), vaddq_s32(c5, rounding));
+            g = vaddq_s32(vshrq_n_s32(g, 3), vaddq_s32(c6, rounding));
+            b = vaddq_s32(vshrq_n_s32(b, 3), vaddq_s32(c7, rounding));
+
+            r = vshrq_n_s32(r, 5);
+            g = vshrq_n_s32(g, 5);
+            b = vshrq_n_s32(b, 5);
+
+            uint32x4_t ru = vandq_u32(vreinterpretq_u32_s32(vmaxq_s32(vdupq_n_s32(0), r)), mask_8);
+            uint32x4_t gu = vandq_u32(vreinterpretq_u32_s32(vmaxq_s32(vdupq_n_s32(0), g)), mask_8);
+            uint32x4_t bu = vandq_u32(vreinterpretq_u32_s32(vmaxq_s32(vdupq_n_s32(0), b)), mask_8);
+
+            uint32x4_t packed = vorrq_u32(vorrq_u32(vshlq_n_u32(ru, 24), vshlq_n_u32(gu, 16)),
+                                           vshlq_n_u32(bu, 8));
+
+            unsigned int tile0 = x / 8;
+            unsigned int tile_x0 = x % 8;
+            if (tile_x0 + 4 <= 8) {
+                vst1q_u32(&output[tile0][y * 8 + tile_x0], packed);
+            } else {
+                alignas(16) u32 tmp[4];
+                vst1q_u32(tmp, packed);
+                unsigned int first = 8 - tile_x0;
+                for (unsigned int j = 0; j < first; j++)
+                    output[tile0][y * 8 + tile_x0 + j] = tmp[j];
+                unsigned int tile1 = (x + 3) / 8;
+                for (unsigned int j = first; j < 4; j++)
+                    output[tile1][y * 8 + (tile_x0 + j) % 8] = tmp[j];
+            }
+        }
+        for (; x < width; ++x) {
+            s32 Y, U, V;
+            if constexpr (input_format == InputFormat::YUV422_Indiv8 ||
+                          input_format == InputFormat::YUV422_Indiv16) {
+                Y = input_Y[y * width + x];
+                U = input_U[(y * width + x) / 2];
+                V = input_V[(y * width + x) / 2];
+            } else if constexpr (input_format == InputFormat::YUV420_Indiv8 ||
+                                  input_format == InputFormat::YUV420_Indiv16) {
+                Y = input_Y[y * width + x];
+                U = input_U[((y / 2) * width + x) / 2];
+                V = input_V[((y / 2) * width + x) / 2];
+            } else if constexpr (input_format == InputFormat::YUYV422_Interleaved) {
+                Y = input_Y[(y * width + x) * 2];
+                U = input_Y[(y * width + (x / 2) * 2) * 2 + 1];
+                V = input_Y[(y * width + (x / 2) * 2) * 2 + 3];
+            }
+            auto& c = coefficients;
+            s32 cY = c[0] * Y;
+            s32 r = cY + c[1] * V;
+            s32 g = cY - c[2] * V - c[3] * U;
+            s32 b = cY + c[4] * U;
+            const s32 rounding_offset = 0x18;
+            r = (r >> 3) + c[5] + rounding_offset;
+            g = (g >> 3) + c[6] + rounding_offset;
+            b = (b >> 3) + c[7] + rounding_offset;
+            unsigned int tile = x / 8;
+            unsigned int tile_x = x % 8;
+            output[tile][y * 8 + tile_x] =
+                ((u32)std::clamp(r >> 5, 0, 0xFF) << 24) |
+                ((u32)std::clamp(g >> 5, 0, 0xFF) << 16) |
+                ((u32)std::clamp(b >> 5, 0, 0xFF) << 8);
+        }
+    }
+#else
     for (unsigned int y = 0; y < height; ++y) {
         for (unsigned int x = 0; x < width; ++x) {
             s32 Y;
@@ -41,7 +153,7 @@ static void ConvertYUVToRGB(const u8* input_Y, const u8* input_U, const u8* inpu
                 U = input_U[(y * width + x) / 2];
                 V = input_V[(y * width + x) / 2];
             } else if constexpr (input_format == InputFormat::YUV420_Indiv8 ||
-                                 input_format == InputFormat::YUV420_Indiv16) {
+                                  input_format == InputFormat::YUV420_Indiv16) {
                 Y = input_Y[y * width + x];
                 U = input_U[((y / 2) * width + x) / 2];
                 V = input_V[((y / 2) * width + x) / 2];
@@ -54,7 +166,6 @@ static void ConvertYUVToRGB(const u8* input_Y, const u8* input_U, const u8* inpu
                 return;
             }
 
-            // This conversion process is bit-exact with hardware, as far as could be tested.
             auto& c = coefficients;
             s32 cY = c[0] * Y;
 
@@ -75,6 +186,7 @@ static void ConvertYUVToRGB(const u8* input_Y, const u8* input_U, const u8* inpu
                    ((u32)std::clamp(b >> 5, 0, 0xFF) << 8);
         }
     }
+#endif
 }
 
 /// Simulates an incoming CDMA transfer. The N parameter is used to automatically convert 16-bit

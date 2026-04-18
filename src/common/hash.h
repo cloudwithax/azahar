@@ -11,6 +11,10 @@
 #include "cityhash.h"
 #include "common/common_types.h"
 
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#endif
+
 namespace Common {
 
 namespace HashAlgo64 {
@@ -60,7 +64,16 @@ static inline u64 ComputeStructHash64(const T& data) noexcept {
 
 template <typename... Ts>
 [[nodiscard]] constexpr u64 HashCombine(u64 seed, u64 hash, Ts... rest) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+    if (std::is_constant_evaluated()) {
+        seed ^= hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    } else {
+        seed = __crc32cd(static_cast<u32>(seed), static_cast<u32>(hash));
+        seed = __crc32cd(seed, static_cast<u32>(hash >> 32));
+    }
+#else
     seed ^= hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+#endif
     return HashCombine(seed, rest...);
 }
 

@@ -6,6 +6,10 @@
 #include "audio_core/interpolate.h"
 #include "common/assert.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 namespace AudioCore::AudioInterp {
 
 // Calculations are done in fixed point with 24 fractional bits.
@@ -59,17 +63,28 @@ void None(State& state, StereoBuffer16& input, float rate, StereoFrame16& output
 
 void Linear(State& state, StereoBuffer16& input, float rate, StereoFrame16& output,
             std::size_t& outputi) {
-    // Note on accuracy: Some values that this produces are +/- 1 from the actual firmware.
     StepOverSamples(state, input, rate, output, outputi,
                     [](u64 fraction, const auto& x0, const auto& x1, const auto& x2) {
-                        // This is a saturated subtraction. (Verified by black-box fuzzing.)
+#if defined(__ARM_NEON)
                         s64 delta0 = std::clamp<s64>(x1[0] - x0[0], -32768, 32767);
                         s64 delta1 = std::clamp<s64>(x1[1] - x0[1], -32768, 32767);
-
+                        const int32x4_t x0_v = {x0[0], x0[1], 0, 0};
+                        const int32x4_t d_v = {static_cast<s32>(delta0), static_cast<s32>(delta1), 0, 0};
+                        const int32x4_t f_v = vdupq_n_s32(static_cast<s32>(fraction >> 10));
+                        const int32x4_t sum = vmlaq_s32(x0_v, d_v, f_v);
+                        const int32x4_t shifted = vshrq_n_s32(sum, 14);
+                        return std::array<s16, 2>{
+                            static_cast<s16>(std::clamp<s32>(vgetq_lane_s32(shifted, 0), -32768, 32767)),
+                            static_cast<s16>(std::clamp<s32>(vgetq_lane_s32(shifted, 1), -32768, 32767)),
+                        };
+#else
+                        s64 delta0 = std::clamp<s64>(x1[0] - x0[0], -32768, 32767);
+                        s64 delta1 = std::clamp<s64>(x1[1] - x0[1], -32768, 32767);
                         return std::array<s16, 2>{
                             static_cast<s16>(x0[0] + fraction * delta0 / scale_factor),
                             static_cast<s16>(x0[1] + fraction * delta1 / scale_factor),
                         };
+#endif
                     });
 }
 

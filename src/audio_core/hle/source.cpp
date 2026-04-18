@@ -12,6 +12,10 @@
 #include "common/logging/log.h"
 #include "core/memory.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 namespace AudioCore::HLE {
 
 SourceStatus::Status Source::Tick(SourceConfiguration::Configuration& config,
@@ -30,13 +34,26 @@ void Source::MixInto(QuadFrame32& dest, std::size_t intermediate_mix_id) const {
         return;
 
     const std::array<float, 4>& gains = state.gain.at(intermediate_mix_id);
+#if defined(__ARM_NEON)
+    const float32x4_t g = vld1q_f32(gains.data());
     for (std::size_t samplei = 0; samplei < samples_per_frame; samplei++) {
-        // Conversion from stereo (current_frame) to quadraphonic (dest) occurs here.
+        const float32x4_t stereo = {static_cast<float>(current_frame[samplei][0]),
+                                      static_cast<float>(current_frame[samplei][1]),
+                                      static_cast<float>(current_frame[samplei][0]),
+                                      static_cast<float>(current_frame[samplei][1])};
+        const float32x4_t mixed = vmulq_f32(g, stereo);
+        const int32x4_t result = vcvtq_s32_f32(mixed);
+        const int32x4_t existing = vld1q_s32(dest[samplei].data());
+        vst1q_s32(dest[samplei].data(), vaddq_s32(existing, result));
+    }
+#else
+    for (std::size_t samplei = 0; samplei < samples_per_frame; samplei++) {
         dest[samplei][0] += static_cast<s32>(gains[0] * current_frame[samplei][0]);
         dest[samplei][1] += static_cast<s32>(gains[1] * current_frame[samplei][1]);
         dest[samplei][2] += static_cast<s32>(gains[2] * current_frame[samplei][0]);
         dest[samplei][3] += static_cast<s32>(gains[3] * current_frame[samplei][1]);
     }
+#endif
 }
 
 void Source::Reset() {

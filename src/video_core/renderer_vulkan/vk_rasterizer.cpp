@@ -4,6 +4,10 @@
 
 #include "common/alignment.h"
 #include "common/literals.h"
+
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#endif
 #include "common/logging/log.h"
 #include "common/math_util.h"
 #include "common/microprofile.h"
@@ -32,9 +36,9 @@ using VideoCore::SurfaceType;
 using namespace Common::Literals;
 using namespace Pica::Shader::Generator;
 
-constexpr u64 STREAM_BUFFER_SIZE = 64_MiB;
-constexpr u64 UNIFORM_BUFFER_SIZE = 8_MiB;
-constexpr u64 TEXTURE_BUFFER_SIZE = 2_MiB;
+constexpr u64 STREAM_BUFFER_SIZE = 16_MiB;
+constexpr u64 UNIFORM_BUFFER_SIZE = 2_MiB;
+constexpr u64 TEXTURE_BUFFER_SIZE = 1_MiB;
 
 constexpr vk::BufferUsageFlags BUFFER_USAGE =
     vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer;
@@ -681,8 +685,28 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (tex_units_changed || !texture_descriptors_valid) {
         const auto& tex = regs.texturing;
         const u32 color_fb_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
-        u64 tex_hash = 0xcbf29ce484222325ULL; // FNV-1a offset basis
+        u64 tex_hash;
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+        tex_hash = 0;
+        tex_hash = __crc32cd(static_cast<u32>(tex_hash), tex.main_config.texture0_enable | (tex.main_config.texture1_enable << 1) |
+                  (tex.main_config.texture2_enable << 2));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture0.address);
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture0.border_color.raw);
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture0.height));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture0.mag_filter));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture0_format)));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture1.address);
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture1.height));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture1.mag_filter));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture1_format)));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture2.address);
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture2.height));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture2.mag_filter));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture2_format)));
+        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), color_fb_addr);
+#else
         constexpr u64 fnv_prime = 0x100000001b3ULL;
+        tex_hash = 0xcbf29ce484222325ULL;
         const auto hash_u32 = [&](u32 val) {
             tex_hash ^= val;
             tex_hash *= fnv_prime;
@@ -703,6 +727,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         hash_u32(*reinterpret_cast<const u32*>(&tex.texture2.mag_filter));
         hash_u32(static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture2_format)));
         hash_u32(color_fb_addr);
+#endif
 
         if (tex_hash != prev_texture_config_hash || !texture_descriptors_valid) {
             prev_texture_config_hash = tex_hash;
