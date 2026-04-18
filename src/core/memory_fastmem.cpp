@@ -67,13 +67,7 @@ void FastMemManager::SetBackingMemory(u8* fcram, size_t fcram_size, u8* vram, si
         auto* mapped = mmap(backing, size, PROT_READ | PROT_WRITE,
                             MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
         if (mapped == MAP_FAILED) {
-            LOG_WARNING(HW_Memory, "memfd remap for {} failed, trying MAP_FIXED: {}",
-                        name, strerror(errno));
-            mapped = mmap(backing, size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED | MAP_FIXED, fd, 0);
-        }
-        if (mapped == MAP_FAILED) {
-            LOG_WARNING(HW_Memory, "memfd remap for {} failed entirely: {}", name, strerror(errno));
+            LOG_WARNING(HW_Memory, "memfd remap for {} failed: {}", name, strerror(errno));
             close(fd);
             region.fd = -1;
             return;

@@ -148,13 +148,6 @@ else()
     endif()
 
     if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
-        add_compile_options(
-            -fvisibility=hidden
-            -fvisibility-inlines-hidden
-        )
-        add_compile_definitions(
-            $<$<CONFIG:Release>:FMT_HEADER_ONLY>
-        )
         if (CMAKE_CXX_COMPILER_ID STREQUAL GNU AND NOT MINGW)
             add_compile_options(
                 -ffunction-sections
@@ -165,14 +158,6 @@ else()
                 -Wl,--as-needed
             )
         endif()
-        add_compile_options("$<$<CONFIG:Release>:-fno-stack-protector>")
-        add_compile_options(
-            $<$<CONFIG:Release>:-fno-rtti>
-        )
-        add_compile_definitions(
-            $<$<CONFIG:Release>:BOOST_NO_RTTI>
-            $<$<CONFIG:Release>:BOOST_NO_TYPEID>
-        )
     endif()
 
     if (MINGW)
