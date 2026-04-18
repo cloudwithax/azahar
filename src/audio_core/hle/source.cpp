@@ -37,10 +37,11 @@ void Source::MixInto(QuadFrame32& dest, std::size_t intermediate_mix_id) const {
 #if defined(__ARM_NEON)
     const float32x4_t g = vld1q_f32(gains.data());
     for (std::size_t samplei = 0; samplei < samples_per_frame; samplei++) {
-        const float32x4_t stereo = {static_cast<float>(current_frame[samplei][0]),
-                                      static_cast<float>(current_frame[samplei][1]),
-                                      static_cast<float>(current_frame[samplei][0]),
-                                      static_cast<float>(current_frame[samplei][1])};
+        const s16 l = current_frame[samplei][0];
+        const s16 r = current_frame[samplei][1];
+        const int32x2_t lr = {l, r};
+        const int32x4_t lrlr = vcombine_s32(lr, lr);
+        const float32x4_t stereo = vcvtq_f32_s32(lrlr);
         const float32x4_t mixed = vmulq_f32(g, stereo);
         const int32x4_t result = vcvtq_s32_f32(mixed);
         const int32x4_t existing = vld1q_s32(dest[samplei].data());

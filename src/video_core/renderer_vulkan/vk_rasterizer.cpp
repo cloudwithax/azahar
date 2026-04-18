@@ -8,6 +8,9 @@
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
 #include <arm_acle.h>
 #endif
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #include "common/logging/log.h"
 #include "common/math_util.h"
 #include "common/microprofile.h"
@@ -301,8 +304,9 @@ void RasterizerVulkan::SetupVertexArray() {
      * or interleave them in the same loader.
      **/
     const auto& vertex_attributes = regs.pipeline.vertex_attributes;
-    const PAddr base_address = vertex_attributes.GetPhysicalBaseAddress(); // GPUREG_ATTR_BUF_BASE
+    const PAddr base_address = vertex_attributes.GetPhysicalBaseAddress();
     const u32 stride_alignment = instance.GetMinVertexStrideAlignment();
+    const bool has_dirty = res_cache.HasDirtyRegions();
 
     VertexLayout& layout = pipeline_info.state.vertex_layout;
     layout.binding_count = 0;
@@ -352,7 +356,9 @@ void RasterizerVulkan::SetupVertexArray() {
             base_address + loader.data_offset + (vs_input_index_min * loader.byte_count);
         const u32 vertex_num = vs_input_index_max - vs_input_index_min + 1;
         u32 data_size = loader.byte_count * vertex_num;
-        res_cache.FlushRegion(data_addr, data_size);
+        if (has_dirty) {
+            res_cache.FlushRegion(data_addr, data_size);
+        }
 
         const MemoryRef src_ref = memory.GetPhysicalRef(data_addr);
         if (src_ref.GetSize() < data_size) {
@@ -539,7 +545,17 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (index_u8 && !native_u8) {
             u16* index_ptr_u16 = reinterpret_cast<u16*>(index_ptr);
-            for (u32 i = 0; i < regs.pipeline.num_vertices; i++) {
+            u32 i = 0;
+#if defined(__ARM_NEON)
+            for (; i + 16 <= regs.pipeline.num_vertices; i += 16) {
+                const uint8x16_t src = vld1q_u8(&index_data[i]);
+                const uint16x8_t lo = vmovl_u8(vget_low_u8(src));
+                const uint16x8_t hi = vmovl_u8(vget_high_u8(src));
+                vst1q_u16(&index_ptr_u16[i], lo);
+                vst1q_u16(&index_ptr_u16[i + 8], hi);
+            }
+#endif
+            for (; i < regs.pipeline.num_vertices; i++) {
                 index_ptr_u16[i] = index_data[i];
             }
         } else {
@@ -557,6 +573,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
     }
 
+    // Flush any accumulated draw batch before BindPipeline may record new state.
+    FlushDrawBatch();
+
     // Never force synchronous compilation — always allow async shader builds.
     if (!pipeline_cache.BindPipeline(pipeline_info, !async_shaders)) {
         return true;
@@ -572,24 +591,65 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const u32 vertex_count = regs.pipeline.num_vertices;
     const s32 vertex_offset = -static_cast<s32>(vertex_info.vs_input_index_min);
 
-    // Single Record call for vertex bind + optional index bind + draw.
-    // This replaces what was previously 2 separate Record calls (index bind
-    // + vertex bind/draw), saving one TypedCommand allocation per indexed draw.
-    scheduler.Record([this, binding_count, vb_offsets, vertex_count, vertex_offset,
-                      is_indexed, need_index_bind, index_offset_val,
-                      index_type_val](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindVertexBuffers(0, binding_count, vertex_buffers.data(), vb_offsets.data());
-        if (need_index_bind) {
-            cmdbuf.bindIndexBuffer(stream_buffer.Handle(), index_offset_val, index_type_val);
-        }
-        if (is_indexed) {
-            cmdbuf.drawIndexed(vertex_count, 1, 0, vertex_offset, 0);
-        } else {
-            cmdbuf.draw(vertex_count, 1, 0, 0);
-        }
-    });
+    // Accumulate into the draw batch. Flush when full.
+    if (batch_count >= MAX_BATCH_DRAWS) {
+        FlushDrawBatch();
+    }
+    auto& entry = draw_batch[batch_count++];
+    entry.vb_offsets = vb_offsets;
+    entry.binding_count = binding_count;
+    entry.vertex_count = vertex_count;
+    entry.vertex_offset = vertex_offset;
+    entry.index_offset = index_offset_val;
+    entry.index_type = index_type_val;
+    entry.is_indexed = is_indexed;
+    entry.need_index_bind = need_index_bind;
 
     return true;
+}
+
+void RasterizerVulkan::FlushDrawBatch() {
+    if (batch_count == 0) {
+        return;
+    }
+
+    if (batch_count == 1) {
+        const auto& d = draw_batch[0];
+        scheduler.Record([this, d](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindVertexBuffers(0, d.binding_count, vertex_buffers.data(),
+                                     d.vb_offsets.data());
+            if (d.need_index_bind) {
+                cmdbuf.bindIndexBuffer(stream_buffer.Handle(), d.index_offset, d.index_type);
+            }
+            if (d.is_indexed) {
+                cmdbuf.drawIndexed(d.vertex_count, 1, 0, d.vertex_offset, 0);
+            } else {
+                cmdbuf.draw(d.vertex_count, 1, 0, 0);
+            }
+        });
+    } else {
+        // Copy the batch to a fixed-size array for the lambda capture.
+        std::array<BatchedDraw, MAX_BATCH_DRAWS> draws = draw_batch;
+        const u32 count = batch_count;
+        scheduler.Record([this, draws, count](vk::CommandBuffer cmdbuf) {
+            for (u32 i = 0; i < count; i++) {
+                const auto& d = draws[i];
+                cmdbuf.bindVertexBuffers(0, d.binding_count, vertex_buffers.data(),
+                                         d.vb_offsets.data());
+                if (d.need_index_bind) {
+                    cmdbuf.bindIndexBuffer(stream_buffer.Handle(), d.index_offset,
+                                           d.index_type);
+                }
+                if (d.is_indexed) {
+                    cmdbuf.drawIndexed(d.vertex_count, 1, 0, d.vertex_offset, 0);
+                } else {
+                    cmdbuf.draw(d.vertex_count, 1, 0, 0);
+                }
+            }
+        });
+    }
+
+    batch_count = 0;
 }
 
 void RasterizerVulkan::SetupIndexArray() {
@@ -628,6 +688,7 @@ void RasterizerVulkan::SetupIndexArray() {
 }
 
 void RasterizerVulkan::DrawTriangles() {
+    FlushDrawBatch();
     if (vertex_batch.empty()) {
         return;
     }
@@ -687,23 +748,25 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         const u32 color_fb_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
         u64 tex_hash;
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
-        tex_hash = 0;
-        tex_hash = __crc32cd(static_cast<u32>(tex_hash), tex.main_config.texture0_enable | (tex.main_config.texture1_enable << 1) |
+        u32 crc_lo = 0;
+        u32 crc_hi = 0;
+        crc_lo = __crc32cw(crc_lo, tex.main_config.texture0_enable | (tex.main_config.texture1_enable << 1) |
                   (tex.main_config.texture2_enable << 2));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture0.address);
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture0.border_color.raw);
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture0.height));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture0.mag_filter));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture0_format)));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture1.address);
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture1.height));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture1.mag_filter));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture1_format)));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), tex.texture2.address);
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture2.height));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), *reinterpret_cast<const u32*>(&tex.texture2.mag_filter));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture2_format)));
-        tex_hash = (tex_hash << 32) | __crc32cd(static_cast<u32>(tex_hash >> 32), color_fb_addr);
+        crc_lo = __crc32cw(crc_lo, tex.texture0.address);
+        crc_lo = __crc32cw(crc_lo, tex.texture0.border_color.raw);
+        crc_lo = __crc32cw(crc_lo, *reinterpret_cast<const u32*>(&tex.texture0.height));
+        crc_lo = __crc32cw(crc_lo, *reinterpret_cast<const u32*>(&tex.texture0.mag_filter));
+        crc_lo = __crc32cw(crc_lo, static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture0_format)));
+        crc_lo = __crc32cw(crc_lo, tex.texture1.address);
+        crc_hi = __crc32cw(crc_hi, *reinterpret_cast<const u32*>(&tex.texture1.height));
+        crc_hi = __crc32cw(crc_hi, *reinterpret_cast<const u32*>(&tex.texture1.mag_filter));
+        crc_hi = __crc32cw(crc_hi, static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture1_format)));
+        crc_hi = __crc32cw(crc_hi, tex.texture2.address);
+        crc_hi = __crc32cw(crc_hi, *reinterpret_cast<const u32*>(&tex.texture2.height));
+        crc_hi = __crc32cw(crc_hi, *reinterpret_cast<const u32*>(&tex.texture2.mag_filter));
+        crc_hi = __crc32cw(crc_hi, static_cast<u32>(static_cast<Pica::TexturingRegs::TextureFormat>(tex.texture2_format)));
+        crc_hi = __crc32cw(crc_hi, color_fb_addr);
+        tex_hash = (static_cast<u64>(crc_hi) << 32) | crc_lo;
 #else
         constexpr u64 fnv_prime = 0x100000001b3ULL;
         tex_hash = 0xcbf29ce484222325ULL;
@@ -734,8 +797,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             texture_descriptors_valid = true;
             SyncTextureUnits(framebuffer);
         }
+        SyncUtilityTextures(framebuffer);
     }
-    SyncUtilityTextures(framebuffer);
 
     // Sync and bind the shader (skip if no FS-relevant registers changed)
     if (fs_config_changed) {
@@ -784,6 +847,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (accelerate) {
         succeeded = AccelerateDrawBatchInternal(is_indexed);
     } else {
+        FlushDrawBatch();
         if (!pipeline_cache.BindPipeline(pipeline_info, !async_shaders)) {
             vertex_batch.clear();
             return true;
@@ -810,10 +874,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     using TextureType = Pica::TexturingRegs::TextureConfig::TextureType;
 
     const auto pica_textures = regs.texturing.GetTextures();
-    const bool use_cube_heap =
-        pica_textures[0].enabled && pica_textures[0].config.type == TextureType::ShadowCube;
-    const auto texture_set = pipeline_cache.Acquire(use_cube_heap ? DescriptorHeapType::Texture
-                                                                  : DescriptorHeapType::Texture);
+    const auto texture_set = pipeline_cache.Acquire(DescriptorHeapType::Texture);
 
     for (u32 texture_index = 0; texture_index < pica_textures.size(); ++texture_index) {
         const auto& texture = pica_textures[texture_index];
@@ -916,6 +977,7 @@ void RasterizerVulkan::BindTextureCube(const Pica::TexturingRegs::FullTextureCon
 }
 
 void RasterizerVulkan::FlushAll() {
+    FlushDrawBatch();
     res_cache.FlushAll();
 }
 
@@ -924,12 +986,14 @@ void RasterizerVulkan::FlushRegion(PAddr addr, u32 size) {
 }
 
 void RasterizerVulkan::InvalidateRegion(PAddr addr, u32 size) {
+    FlushDrawBatch();
     res_cache.InvalidateRegion(addr, size);
     texture_descriptors_valid = false;
     vertex_descriptors_valid = false;
 }
 
 void RasterizerVulkan::FlushAndInvalidateRegion(PAddr addr, u32 size) {
+    FlushDrawBatch();
     res_cache.FlushRegion(addr, size);
     res_cache.InvalidateRegion(addr, size);
     texture_descriptors_valid = false;
@@ -937,6 +1001,7 @@ void RasterizerVulkan::FlushAndInvalidateRegion(PAddr addr, u32 size) {
 }
 
 void RasterizerVulkan::ClearAll(bool flush) {
+    FlushDrawBatch();
     res_cache.ClearAll(flush);
 }
 

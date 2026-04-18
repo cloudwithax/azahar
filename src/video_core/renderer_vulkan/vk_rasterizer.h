@@ -178,6 +178,24 @@ private:
     /// is redundant because MarkValid + dirty_regions.set() are idempotent.
     const Framebuffer* prev_framebuffer{nullptr};
     Common::Rectangle<u32> prev_draw_rect{};
+
+    /// Draw command batching: accumulate consecutive draw commands that share
+    /// identical pipeline/descriptor state into a single scheduler.Record call.
+    static constexpr u32 MAX_BATCH_DRAWS = 8;
+    struct BatchedDraw {
+        std::array<vk::DeviceSize, 16> vb_offsets;
+        u32 binding_count;
+        u32 vertex_count;
+        s32 vertex_offset;
+        u32 index_offset;
+        vk::IndexType index_type;
+        bool is_indexed;
+        bool need_index_bind;
+    };
+    std::array<BatchedDraw, MAX_BATCH_DRAWS> draw_batch{};
+    u32 batch_count{0};
+
+    void FlushDrawBatch();
 };
 
 } // namespace Vulkan

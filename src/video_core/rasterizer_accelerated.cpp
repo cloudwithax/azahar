@@ -55,7 +55,9 @@ RasterizerAccelerated::HardwareVertex::HardwareVertex(const Pica::OutputVertex& 
 }
 
 RasterizerAccelerated::RasterizerAccelerated(Memory::MemorySystem& memory_, Pica::PicaCore& pica_)
-    : memory{memory_}, pica{pica_}, regs{pica.regs.internal} {}
+    : memory{memory_}, pica{pica_}, regs{pica.regs.internal} {
+    vertex_batch.reserve(1024);
+}
 
 /**
  * This is a helper function to resolve an issue when interpolating opposite quaternions. See below
@@ -151,7 +153,7 @@ void RasterizerAccelerated::SyncDrawUniforms() {
     {
         bool any_dirty = false;
         for (const auto& qw : dirty.qwords) {
-            any_dirty |= (qw != 0);
+            if (qw) { any_dirty = true; break; }
         }
         if (!any_dirty) {
             return;
@@ -283,8 +285,9 @@ void RasterizerAccelerated::SyncDrawUniforms() {
         tex_units_changed = d.tex_units;
         fs_config_changed = d.tex_units | d.texenv | d.framebuffer | d.light_lut;
         if (!fs_config_changed) {
-            for (const auto& l : d.lights) {
-                if (l) { fs_config_changed = true; break; }
+            const u64* lights_u64 = reinterpret_cast<const u64*>(d.lights.data());
+            if (lights_u64[0] | lights_u64[1]) {
+                fs_config_changed = true;
             }
         }
     }

@@ -3,7 +3,6 @@
 // Refer to the license.txt file included.
 
 #include <bit>
-#include <functional>
 #include "common/common_types.h"
 #include "common/string_literal.h"
 #include "core/arm/dynarmic/arm_tick_counts.h"
@@ -49,7 +48,7 @@ struct MatcherArg {
 struct Matcher {
     u32 mask;
     u32 expect;
-    std::function<u64(u32)> fn;
+    u64 (*fn)(u32);
 };
 
 u64 DataProcessing_imm(auto i) {
@@ -89,10 +88,10 @@ u64 LoadStoreMultiple(auto i) {
 #define INST(NAME, BS, CYCLES)                                                                     \
     Matcher{GetMatchingBitsFromStringLiteral<BS, "01">(),                                          \
             GetMatchingBitsFromStringLiteral<BS, "1">(),                                           \
-            std::function<u64(u32)>{[](u32 instruction) -> u64 {                                   \
+            +[](u32 instruction) -> u64 {                                                          \
                 [[maybe_unused]] MatcherArg<BS> i{instruction};                                    \
                 return (CYCLES);                                                                   \
-            }}},
+            }},
 
 const std::array arm_matchers{
     // clang-format off

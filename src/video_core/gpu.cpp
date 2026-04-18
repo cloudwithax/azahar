@@ -74,15 +74,22 @@ void GPU::SetInterruptHandler(Service::GSP::InterruptHandler handler) {
 }
 
 void GPU::FlushRegion(PAddr addr, u32 size) {
+    impl->SyncGPU();
     impl->rasterizer->FlushRegion(addr, size);
 }
 
 void GPU::InvalidateRegion(PAddr addr, u32 size) {
+    impl->SyncGPU();
     impl->rasterizer->InvalidateRegion(addr, size);
 }
 
 void GPU::ClearAll(bool flush) {
+    impl->SyncGPU();
     impl->rasterizer->ClearAll(flush);
+}
+
+void GPU::SyncGPU() {
+    impl->SyncGPU();
 }
 
 void GPU::Execute(const Service::GSP::Command& command) {
@@ -327,24 +334,37 @@ void GPU::ApplyPerProgramSettings(u64 program_ID) {
 }
 
 void GPU::SubmitCmdList(u32 index) {
-    // Check if a command list was triggered.
     auto& config = impl->pica.regs.internal.pipeline.command_buffer;
     if (!config.trigger[index]) {
         return;
     }
 
-    MICROPROFILE_SCOPE(GPU_CmdlistProcessing);
-
-    // Forward command list processing to the PICA core.
     const PAddr addr = config.GetPhysicalAddress(index);
     const u32 size = config.GetSize(index);
-    impl->pica.ProcessCmdList(addr, size,
-                              !right_eye_disabler->ShouldAllowCmdQueueTrigger(addr, size));
+    const bool ignore = !right_eye_disabler->ShouldAllowCmdQueueTrigger(addr, size);
     config.trigger[index] = 0;
+
+    // Signal P3D immediately so the CPU can continue while the GPU thread
+    // processes the command list. On real 3DS hardware the GPU runs
+    // asynchronously — this lets the CPU overlap game logic with GPU work.
+    impl->signal_interrupt(Service::GSP::InterruptId::P3D);
+
+    if (ignore) {
+        return;
+    }
+
+    // Drain the previous command list before queuing a new one to avoid
+    // concurrent rasterizer access.
+    impl->SyncGPU();
+
+    impl->EnqueueGPUWork([this, addr, size] {
+        MICROPROFILE_SCOPE(GPU_CmdlistProcessing);
+        impl->pica.ProcessCmdList(addr, size, false);
+    });
 }
 
 void GPU::MemoryFill(u32 index, u32 intr_index) {
-    // Check if a memory fill was triggered.
+    impl->SyncGPU();
     auto& config = impl->pica.regs.memory_fill_config[index];
     if (!config.trigger) {
         return;
@@ -372,7 +392,7 @@ void GPU::MemoryFill(u32 index, u32 intr_index) {
 }
 
 void GPU::MemoryTransfer() {
-    // Check if a transfer was triggered.
+    impl->SyncGPU();
     auto& config = impl->pica.regs.display_transfer_config;
     if (!config.trigger.Value()) {
         return;
@@ -415,14 +435,14 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
     // Reschedule the next VBlank immediately so the emulated clock keeps ticking.
     impl->timing.ScheduleEvent(FRAME_TICKS - cycles_late, impl->vblank_event);
 
-    // Attempt a non-blocking frame present. If the GPU is still busy with the
-    // previous frame, skip this one — the game runs at full speed with dropped
-    // frames rather than half speed with every frame rendered.
+    // Ensure the GPU thread has finished processing before presenting.
+    impl->SyncGPU();
+
     impl->renderer->TrySwapBuffers();
 }
 
 void GPU::RecreateRenderer(Frontend::EmuWindow& emu_window, Frontend::EmuWindow* secondary_window) {
-    // Reset the renderer (this will destroy OpenGL resources)
+    impl->SyncGPU();
     impl->renderer.reset();
 
     // Create a new renderer
@@ -461,7 +481,7 @@ void GPU::RecreateRenderer(Frontend::EmuWindow& emu_window, Frontend::EmuWindow*
 }
 
 void GPU::ReleaseRenderer() {
-    // Just reset the renderer to release OpenGL resources
+    impl->SyncGPU();
     // Don't null out rasterizer pointer as it will become dangling
     impl->renderer.reset();
     impl->sw_blitter.reset();
@@ -470,6 +490,7 @@ void GPU::ReleaseRenderer() {
 
 template <class Archive>
 void GPU::serialize(Archive& ar, const u32 file_version) {
+    impl->SyncGPU();
     ar & impl->pica;
 }
 

@@ -175,9 +175,6 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
     // Track whether value actually changed for dirty flag optimization below.
     const bool value_changed = new_value != old_value;
 
-    const bool gs_unit_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
-    const bool use_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
-
     switch (id) {
     // Trigger IRQ
     case PICA_REG_INDEX(irq_request):
@@ -293,18 +290,24 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
         break;
     }
 
-    case PICA_REG_INDEX(vs.output_mask):
-        if (!gs_unit_exclusive && !use_gs) {
+    case PICA_REG_INDEX(vs.output_mask): {
+        const bool gs_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
+        const bool has_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
+        if (!gs_exclusive && !has_gs) {
             regs.internal.gs.output_mask.Assign(value);
         }
         break;
+    }
 
-    case PICA_REG_INDEX(vs.bool_uniforms):
+    case PICA_REG_INDEX(vs.bool_uniforms): {
         vs_setup.WriteUniformBoolReg(regs.internal.vs.bool_uniforms.Value());
-        if (!gs_unit_exclusive && !use_gs) {
+        const bool gs_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
+        const bool has_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
+        if (!gs_exclusive && !has_gs) {
             gs_setup.WriteUniformBoolReg(regs.internal.vs.bool_uniforms.Value());
         }
         break;
+    }
 
     case PICA_REG_INDEX(vs.int_uniforms[0]):
     case PICA_REG_INDEX(vs.int_uniforms[1]):
@@ -312,7 +315,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
     case PICA_REG_INDEX(vs.int_uniforms[3]): {
         const u32 index = (id - PICA_REG_INDEX(vs.int_uniforms[0]));
         vs_setup.WriteUniformIntReg(index, regs.internal.vs.GetIntUniform(index));
-        if (!gs_unit_exclusive && !use_gs) {
+        const bool gs_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
+        const bool has_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
+        if (!gs_exclusive && !has_gs) {
             gs_setup.WriteUniformIntReg(index, regs.internal.vs.GetIntUniform(index));
         }
         break;
@@ -327,8 +332,12 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
     case PICA_REG_INDEX(vs.uniform_setup.set_value[6]):
     case PICA_REG_INDEX(vs.uniform_setup.set_value[7]): {
         const auto index = vs_setup.WriteUniformFloatReg(regs.internal.vs, value);
-        if (!gs_unit_exclusive && !use_gs && index) {
-            gs_setup.uniforms.f[index.value()] = vs_setup.uniforms.f[index.value()];
+        if (index) {
+            const bool gs_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
+            const bool has_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
+            if (!gs_exclusive && !has_gs) {
+                gs_setup.uniforms.f[index.value()] = vs_setup.uniforms.f[index.value()];
+            }
         }
         break;
     }
@@ -346,7 +355,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
             LOG_ERROR(HW_GPU, "Invalid VS program offset {}", offset);
         } else {
             vs_setup.UpdateProgramCode(offset, value);
-            if (!gs_unit_exclusive && !use_gs) {
+            const bool gs_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
+            const bool has_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
+            if (!gs_exclusive && !has_gs) {
                 gs_setup.UpdateProgramCode(offset, value);
             }
             offset++;
@@ -367,7 +378,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask, bool& stop_requeste
             LOG_ERROR(HW_GPU, "Invalid VS swizzle pattern offset {}", offset);
         } else {
             vs_setup.UpdateSwizzleData(offset, value);
-            if (!gs_unit_exclusive && !use_gs) {
+            const bool gs_exclusive = regs.internal.pipeline.gs_unit_exclusive_configuration;
+            const bool has_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
+            if (!gs_exclusive && !has_gs) {
                 gs_setup.UpdateSwizzleData(offset, value);
             }
             offset++;

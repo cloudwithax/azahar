@@ -14,6 +14,7 @@
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/gdbstub/gdbstub.h"
+#include "core/hle/kernel/process.h"
 #include "core/hle/kernel/svc.h"
 #include "core/memory.h"
 
@@ -104,6 +105,22 @@ public:
         }
         ASSERT_MSG(false, "ExceptionRaised(exception = {}, pc = {:08X}, code = {:08X})", exception,
                    pc, MemoryReadCode(pc).value());
+    }
+
+    bool IsReadOnlyMemory(VAddr vaddr) override {
+        const auto process = parent.system.Kernel().GetCurrentProcess();
+        if (!process || !process->codeset) {
+            return false;
+        }
+        const auto& code = process->codeset->CodeSegment();
+        if (vaddr >= code.addr && vaddr < code.addr + code.size) {
+            return true;
+        }
+        const auto& rodata = process->codeset->RODataSegment();
+        if (vaddr >= rodata.addr && vaddr < rodata.addr + rodata.size) {
+            return true;
+        }
+        return false;
     }
 
     void AddTicks(std::uint64_t ticks) override {
@@ -315,6 +332,11 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     config.global_monitor = &exclusive_monitor.monitor;
 
     config.always_little_endian = true;
+
+    auto fastmem_base = memory.GetFastmemBase();
+    if (fastmem_base) {
+        config.fastmem_pointer = fastmem_base;
+    }
 
     return std::make_unique<Dynarmic::A32::Jit>(config);
 }

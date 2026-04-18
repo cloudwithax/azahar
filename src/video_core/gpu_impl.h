@@ -5,8 +5,15 @@
 
 #pragma once
 
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <queue>
+#include <thread>
+
 #include "common/archives.h"
 #include "common/microprofile.h"
+#include "common/thread.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
@@ -37,13 +44,70 @@ struct GPU::Impl {
     Core::TimingEventType* vblank_event;
     Service::GSP::InterruptHandler signal_interrupt;
 
+    std::thread gpu_thread;
+    std::mutex gpu_mutex;
+    std::condition_variable gpu_work_cv;
+    std::condition_variable gpu_idle_cv;
+    std::queue<std::function<void()>> gpu_queue;
+    bool gpu_running{true};
+    int gpu_pending{0};
+
     explicit Impl(Core::System& system, Frontend::EmuWindow& emu_window,
                   Frontend::EmuWindow* secondary_window)
         : timing{system.CoreTiming()}, system{system}, memory{system.Memory()},
           debug_context{Pica::g_debug_context}, pica{memory, debug_context},
           renderer{VideoCore::CreateRenderer(emu_window, secondary_window, pica, system)},
           rasterizer{renderer->Rasterizer()},
-          sw_blitter{std::make_unique<SwRenderer::SwBlitter>(memory, rasterizer)} {}
-    ~Impl() = default;
+          sw_blitter{std::make_unique<SwRenderer::SwBlitter>(memory, rasterizer)} {
+        gpu_thread = std::thread([this] {
+            Common::SetCurrentThreadName("GPUThread");
+            Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock lock(gpu_mutex);
+                    gpu_work_cv.wait(lock, [this] {
+                        return !gpu_queue.empty() || !gpu_running;
+                    });
+                    if (!gpu_running && gpu_queue.empty()) {
+                        return;
+                    }
+                    task = std::move(gpu_queue.front());
+                    gpu_queue.pop();
+                }
+                task();
+                {
+                    std::lock_guard lock(gpu_mutex);
+                    gpu_pending--;
+                }
+                gpu_idle_cv.notify_all();
+            }
+        });
+    }
+
+    ~Impl() {
+        {
+            std::lock_guard lock(gpu_mutex);
+            gpu_running = false;
+        }
+        gpu_work_cv.notify_one();
+        if (gpu_thread.joinable()) {
+            gpu_thread.join();
+        }
+    }
+
+    void EnqueueGPUWork(std::function<void()> work) {
+        {
+            std::lock_guard lock(gpu_mutex);
+            gpu_pending++;
+            gpu_queue.push(std::move(work));
+        }
+        gpu_work_cv.notify_one();
+    }
+
+    void SyncGPU() {
+        std::unique_lock lock(gpu_mutex);
+        gpu_idle_cv.wait(lock, [this] { return gpu_pending == 0; });
+    }
 };
 } // namespace VideoCore

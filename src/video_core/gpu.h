@@ -60,6 +60,9 @@ public:
     /// Flushes and invalidates all memory in the rasterizer cache and removes any leftover state.
     void ClearAll(bool flush);
 
+    /// Blocks until the GPU thread has finished all queued work.
+    void SyncGPU();
+
     /// Executes the provided GSP command.
     void Execute(const Service::GSP::Command& command);
 

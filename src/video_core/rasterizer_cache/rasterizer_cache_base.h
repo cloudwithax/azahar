@@ -79,6 +79,11 @@ public:
                              Runtime& runtime, Pica::RegsInternal& regs, RendererBase& renderer);
     ~RasterizerCache();
 
+    /// Returns true if any GPU-rendered surfaces are pending flush.
+    bool HasDirtyRegions() const {
+        return !dirty_regions.empty();
+    }
+
     /// Notify the cache that a new frame has been queued
     void TickFrame();
 

@@ -333,10 +333,10 @@ public:
 
         auto CheckRegion = [&](VAddr region_start, VAddr region_end, PAddr paddr_region_start) {
             if (start >= region_end || end <= region_start) {
-                // No overlap with region
                 return;
             }
 
+            system.GPU().SyncGPU();
             auto& renderer = system.GPU().Renderer();
             VAddr overlap_start = std::max(start, region_start);
             VAddr overlap_end = std::min(end, region_end);
