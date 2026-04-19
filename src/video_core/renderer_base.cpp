@@ -136,10 +136,10 @@ void RendererBase::UpdateAdaptiveQualityControls(double frame_scale, u32 request
     }
 
     const bool at_native_floor = effective_scale <= 1;
-    constexpr double QualityOverloadThreshold = 1.08;
-    constexpr double QualityRecoveryThreshold = 0.90;
-    constexpr u32 SlowFramesToShedQuality = 75;
-    constexpr u32 FastFramesToRestoreQuality = 300;
+    constexpr double QualityOverloadThreshold = 1.05;
+    constexpr double QualityRecoveryThreshold = 0.88;
+    constexpr u32 SlowFramesToShedQuality = 45;
+    constexpr u32 FastFramesToRestoreQuality = 360;
 
     if (at_native_floor && frame_scale > QualityOverloadThreshold) {
         adaptive_quality_slow_streak =
@@ -190,10 +190,10 @@ void RendererBase::UpdateAdaptiveResolutionScale() {
         slow_frame_streak = 0;
         fast_frame_streak = 0;
     } else {
-        constexpr double OverloadThreshold = 1.12;
-        constexpr double RecoveryThreshold = 0.92;
-        constexpr u32 SlowFramesToStepDown = 45;
-        constexpr u32 FastFramesToStepUp = 240;
+        constexpr double OverloadThreshold = 1.08;
+        constexpr double RecoveryThreshold = 0.88;
+        constexpr u32 SlowFramesToStepDown = 30;
+        constexpr u32 FastFramesToStepUp = 300;
 
         if (frame_scale > OverloadThreshold) {
             slow_frame_streak = std::min(slow_frame_streak + 1, SlowFramesToStepDown);

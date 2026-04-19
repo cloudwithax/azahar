@@ -71,7 +71,7 @@ void Scheduler::Finish(vk::Semaphore signal, vk::Semaphore wait) {
     Wait(presubmit_tick);
 }
 
-void Scheduler::WaitWorker(u32 adaptive_interval) {
+void Scheduler::WaitWorker() {
     if (!use_worker_thread) {
         return;
     }
@@ -89,20 +89,6 @@ void Scheduler::WaitWorker(u32 adaptive_interval) {
     // This needs to be done in the same order as WorkerThread.
     std::scoped_lock el{execution_mutex};
 
-    // If adaptive interval is specified, throttle based on GPU load
-    if (adaptive_interval > 0) {
-        constexpr s64 MIN_THROTTLE = 1'000'000;
-        constexpr s64 MAX_THROTTLE = 8'000'000;
-        constexpr s64 MAX_INTERVAL = 32;
-
-        const s64 frame_time = master_semaphore->CurrentTick() - last_wait_tick;
-        last_wait_tick = master_semaphore->CurrentTick();
-
-        if (frame_time > MIN_THROTTLE && adaptive_interval < MAX_INTERVAL) {
-            const s64 throttle = std::min<s64>(frame_time * 0.5, MAX_THROTTLE);
-            std::this_thread::sleep_for(std::chrono::microseconds(throttle));
-        }
-    }
 }
 
 void Scheduler::Wait(u64 tick) {

@@ -7,7 +7,6 @@
 #include <mutex>
 #include <queue>
 #include "common/polyfill_thread.h"
-#include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -71,10 +70,6 @@ public:
     /// This is called to notify the rendering backend of a surface change
     void NotifySurfaceChanged();
 
-    [[nodiscard]] s64 GetGpuQueueTime() const {
-        return gpu_queue_time;
-    }
-
     [[nodiscard]] vk::RenderPass Renderpass() const noexcept {
         return present_renderpass;
     }
@@ -119,7 +114,6 @@ private:
     std::jthread present_thread;
     bool vsync_enabled{};
     bool blit_supported;
-    s64 gpu_queue_time = 0;
     bool use_present_thread{true};
     void* last_render_surface{};
 };

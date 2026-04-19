@@ -327,7 +327,7 @@ bool RendererVulkan::TrySwapBuffers() {
             secondary_present_window_ptr = std::make_unique<PresentWindow>(
                 *secondary_window, instance, scheduler, IsLowRefreshRate(), rasterizer);
         }
-        RenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
+        TryRenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
         secondary_window->PollEvents();
     }
 #endif
@@ -339,7 +339,7 @@ bool RendererVulkan::TrySwapBuffers() {
             secondary_present_window_ptr = std::make_unique<PresentWindow>(
                 *secondary_window, instance, scheduler, IsLowRefreshRate(), rasterizer);
         }
-        RenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
+        TryRenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
         secondary_window->PollEvents();
     }
 #endif

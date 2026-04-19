@@ -12,9 +12,9 @@
 namespace Vulkan {
 
 // Flush threshold for tiler GPUs (Mali/Adreno/PowerVR). Too low wastes time on
-// vkQueueSubmit overhead; too high risks tile buffer pressure. 30 draws balances
+// vkQueueSubmit overhead; too high risks tile buffer pressure. 36 draws balances
 // submit frequency against tile utilization on Mali G52.
-constexpr u32 MinDrawsToFlush = 30;
+constexpr u32 MinDrawsToFlush = 36;
 
 using VideoCore::PixelFormat;
 using VideoCore::SurfaceType;

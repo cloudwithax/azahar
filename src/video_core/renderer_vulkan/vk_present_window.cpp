@@ -100,7 +100,9 @@ bool CanBlitToSwapchain(const vk::PhysicalDevice& physical_device, vk::Format fo
 [[nodiscard]] u32 RenderFrameCount(u32 swapchain_images) {
 #ifdef ANDROID
     if (Settings::values.async_presentation.GetValue()) {
-        return std::clamp(swapchain_images + 1, 3u, 5u);
+        // Keep buffering depth modest on RK3566/RK3568 class devices to reduce
+        // queue latency and memory bandwidth pressure while still avoiding stalls.
+        return std::clamp(swapchain_images, 3u, 4u);
     }
 #endif
     return swapchain_images;
@@ -267,13 +269,13 @@ Frame* PresentWindow::GetRenderFrame() {
     // Wait for the presentation to be finished so all frame resources are free.
     // Use an 8ms timeout to reduce CPU spinning on Mali drivers while still
     // maintaining frame pacing at 60fps (16.67ms per frame). If the fence
-    // isn't signaled in 8ms, yield and retry (handles Mali ppoll() bug).
+    // isn't signaled in 8ms, sleep briefly and retry (handles Mali ppoll() bug).
     for (;;) {
         result = device.waitForFences(frame->present_done, false, 8'000'000);
         if (result == vk::Result::eSuccess) {
             break;
         }
-        std::this_thread::yield();
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
 
     device.resetFences(frame->present_done);
@@ -306,7 +308,7 @@ Frame* PresentWindow::TryGetRenderFrame() {
 
 void PresentWindow::Present(Frame* frame) {
     if (!use_present_thread) {
-        scheduler.WaitWorker(0);
+        scheduler.WaitWorker();
         CopyToSwapchain(frame);
         free_queue.push(frame);
         return;
@@ -345,11 +347,6 @@ void PresentWindow::PresentThread(std::stop_token token) {
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
 #endif
 
-    static constexpr std::size_t GPU_LOAD_HISTORY = 32;
-    std::array<std::chrono::microseconds, GPU_LOAD_HISTORY> gpu_queue_times{};
-    std::size_t gpu_load_index = 0;
-    s64 total_gpu_queue_time = 0;
-
     while (!token.stop_requested()) {
         std::unique_lock lock{queue_mutex};
 
@@ -377,9 +374,6 @@ void PresentWindow::PresentThread(std::stop_token token) {
         const auto queue_time = std::chrono::duration_cast<std::chrono::microseconds>(
             frame_present_time - frame_submit_time);
 
-        // Update GPU load tracking
-        static_cast<RasterizerVulkan*>(&rasterizer)->UpdateGpuQueueTime(queue_time.count());
-
         // Free the frame for reuse
         std::scoped_lock fl{free_mutex};
         free_queue.push(frame);
@@ -391,10 +385,10 @@ void PresentWindow::PresentThread(std::stop_token token) {
         // logic bug: the HIGH threshold was checked before MAX in an else-if,
         // so the MAX branch was unreachable.
         const s64 local_queue_us = queue_time.count();
-        constexpr s64 HIGH_GPU_LOAD_THRESHOLD = 12'000'000; // 12ms
-        constexpr s64 MAX_GPU_LOAD_THRESHOLD = 20'000'000;  // 20ms
+        constexpr s64 HIGH_GPU_LOAD_THRESHOLD = 12'000; // 12ms in microseconds
+        constexpr s64 MAX_GPU_LOAD_THRESHOLD = 20'000;  // 20ms in microseconds
         if (local_queue_us > MAX_GPU_LOAD_THRESHOLD) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         } else if (local_queue_us > HIGH_GPU_LOAD_THRESHOLD) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }

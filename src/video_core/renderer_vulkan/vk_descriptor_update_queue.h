@@ -47,6 +47,7 @@ private:
     const u32 descriptor_write_max;
     std::unique_ptr<DescriptorInfoUnion[]> descriptor_infos;
     std::unique_ptr<vk::WriteDescriptorSet[]> descriptor_writes;
+    u32 descriptor_info_end = 0;
     u32 descriptor_write_end = 0;
 };
 

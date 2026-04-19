@@ -164,6 +164,7 @@ private:
     /// Cached pipeline lookup: skip GetPipeline hash + map lookup when the
     /// static pipeline state is unchanged from the previous draw.
     GraphicsPipeline* cached_pipeline{};
+    u64 cached_pipeline_hash{};
     StaticPipelineInfo cached_pipeline_state{};
 
     Shader trivial_vertex_shader;

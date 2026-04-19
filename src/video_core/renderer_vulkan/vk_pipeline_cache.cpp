@@ -84,9 +84,13 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              RenderManager& renderpass_cache_, DescriptorUpdateQueue& update_queue_)
     : instance{instance_}, scheduler{scheduler_}, renderpass_cache{renderpass_cache_},
       update_queue{update_queue_},
-      num_worker_threads{std::thread::hardware_concurrency() <= 2
-                             ? 1U
-                             : std::thread::hardware_concurrency() / 2},
+      num_worker_threads{
+#ifdef ANDROID
+          1U
+#else
+          std::thread::hardware_concurrency() <= 2 ? 1U : std::thread::hardware_concurrency() / 2
+#endif
+      },
       pipeline_workers{num_worker_threads, "Pipeline workers", {},
                        Common::ThreadPriority::Low},
       shader_workers{num_worker_threads, "Shader workers", {}, Common::ThreadPriority::Low},
@@ -176,6 +180,8 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
     // Drain them before replacing any per-title Vulkan cache state.
     WaitForBackgroundCompilation();
     current_pipeline = nullptr;
+    cached_pipeline = nullptr;
+    cached_pipeline_hash = 0;
     current_shaders.fill(nullptr);
     shader_hashes.fill(0);
     current_info = {};
@@ -314,6 +320,8 @@ void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
                                   const VideoCore::DiskResourceLoadCallback& callback) {
     WaitForBackgroundCompilation();
     current_pipeline = nullptr;
+    cached_pipeline = nullptr;
+    cached_pipeline_hash = 0;
     current_shaders.fill(nullptr);
     shader_hashes.fill(0);
     current_info = {};
@@ -398,13 +406,16 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     // StaticPipelineInfo + does a robin_map lookup every call. When the
     // static pipeline state hasn't changed (common for consecutive draws
     // with the same shader/blend/depth config), reuse the cached pointer.
+    const u64 optimized_hash = info.state.OptimizedHash(instance);
     GraphicsPipeline* pipeline;
-    if (cached_pipeline && std::memcmp(&info.state, &cached_pipeline_state, sizeof(info.state)) == 0) {
+    if (cached_pipeline && optimized_hash == cached_pipeline_hash &&
+        std::memcmp(&info.state, &cached_pipeline_state, sizeof(info.state)) == 0) {
         pipeline = cached_pipeline;
     } else {
         pipeline = curr_disk_cache->GetPipeline(info);
         cached_pipeline = pipeline;
-        std::memcpy(&cached_pipeline_state, &info.state, sizeof(info.state));
+        cached_pipeline_hash = optimized_hash;
+        cached_pipeline_state = info.state;
     }
     if ((!pipeline->IsDone() && !pipeline->TryBuild(wait_built)) || pipeline->HasFailed() ||
         !pipeline->HasHandle()) {

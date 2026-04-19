@@ -37,15 +37,11 @@ public:
     /// Sends the current execution context to the GPU and waits for it to complete.
     void Finish(vk::Semaphore signal = nullptr, vk::Semaphore wait = nullptr);
 
-    /// Waits for the worker thread to finish executing everything. After this function returns it's
-    /// safe to touch worker resources.
-    void WaitWorker();
-
     /// Waits for the given tick to trigger on the GPU.
     void Wait(u64 tick);
 
-    /// Dynamic WaitWorker with adaptive interval based on GPU load
-    void WaitWorker(u32 adaptive_interval = 16);
+    /// Waits for the worker thread to finish executing everything.
+    void WaitWorker();
 
     /// Sends currently recorded work to the worker thread.
     void DispatchWork();
@@ -147,13 +143,13 @@ private:
             using FuncType = TypedCommand<T>;
             static_assert(sizeof(FuncType) < sizeof(data), "Lambda is too large");
 
-            recorded_counts++;
             command_offset = Common::AlignUp(command_offset, alignof(FuncType));
             if (command_offset > sizeof(data) - sizeof(FuncType)) {
                 return false;
             }
             Command* const current_last = last;
             last = new (data.data() + command_offset) FuncType(std::move(command));
+            recorded_counts++;
 
             if (current_last) {
                 current_last->SetNext(last);
@@ -211,7 +207,6 @@ private:
     std::condition_variable_any event_cv;
     std::jthread worker_thread;
     bool use_worker_thread;
-    u64 last_wait_tick = 0;
 };
 
 } // namespace Vulkan

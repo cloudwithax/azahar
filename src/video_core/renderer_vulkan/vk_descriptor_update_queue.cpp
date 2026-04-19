@@ -18,17 +18,20 @@ void DescriptorUpdateQueue::Flush() {
         return;
     }
     device.updateDescriptorSets({std::span(descriptor_writes.get(), descriptor_write_end)}, {});
+    descriptor_info_end = 0;
     descriptor_write_end = 0;
 }
 
 void DescriptorUpdateQueue::AddStorageImage(vk::DescriptorSet target, u8 binding,
                                             vk::ImageView image_view,
                                             vk::ImageLayout image_layout) {
-    if (descriptor_write_end >= descriptor_write_max) [[unlikely]] {
+    if (descriptor_info_end >= descriptor_write_max || descriptor_write_end >= descriptor_write_max)
+        [[unlikely]] {
         Flush();
     }
 
-    auto& image_info = descriptor_infos[descriptor_write_end].image_info;
+    const u32 info_index = descriptor_info_end++;
+    auto& image_info = descriptor_infos[info_index].image_info;
     image_info.sampler = VK_NULL_HANDLE;
     image_info.imageView = image_view;
     image_info.imageLayout = image_layout;
@@ -44,24 +47,39 @@ void DescriptorUpdateQueue::AddStorageImage(vk::DescriptorSet target, u8 binding
 }
 
 void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding, u8 array_index,
-                                            vk::ImageView image_view, vk::Sampler sampler,
-                                            vk::ImageLayout image_layout) {
-    if (descriptor_write_end >= descriptor_write_max) [[unlikely]] {
+                                             vk::ImageView image_view, vk::Sampler sampler,
+                                             vk::ImageLayout image_layout) {
+    if (descriptor_info_end >= descriptor_write_max || descriptor_write_end >= descriptor_write_max)
+        [[unlikely]] {
         Flush();
     }
 
-    auto& image_info = descriptor_infos[descriptor_write_end].image_info;
+    const u32 info_index = descriptor_info_end++;
+    auto& image_info = descriptor_infos[info_index].image_info;
     image_info.sampler = sampler;
     image_info.imageView = image_view;
     image_info.imageLayout = image_layout;
+
+    const vk::DescriptorType descriptor_type =
+        sampler ? vk::DescriptorType::eCombinedImageSampler : vk::DescriptorType::eSampledImage;
+
+    if (descriptor_write_end > 0) {
+        auto& prev = descriptor_writes[descriptor_write_end - 1];
+        if (prev.pImageInfo != nullptr && prev.dstSet == target && prev.dstBinding == binding &&
+            prev.descriptorType == descriptor_type &&
+            prev.dstArrayElement + prev.descriptorCount == array_index &&
+            prev.pImageInfo + prev.descriptorCount == &image_info) {
+            prev.descriptorCount++;
+            return;
+        }
+    }
 
     descriptor_writes[descriptor_write_end++] = vk::WriteDescriptorSet{
         .dstSet = target,
         .dstBinding = binding,
         .dstArrayElement = array_index,
         .descriptorCount = 1,
-        .descriptorType =
-            sampler ? vk::DescriptorType::eCombinedImageSampler : vk::DescriptorType::eSampledImage,
+        .descriptorType = descriptor_type,
         .pImageInfo = &image_info,
     };
 }
@@ -69,11 +87,13 @@ void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding
 void DescriptorUpdateQueue::AddBuffer(vk::DescriptorSet target, u8 binding, vk::Buffer buffer,
                                       vk::DeviceSize offset, vk::DeviceSize size,
                                       vk::DescriptorType type) {
-    if (descriptor_write_end >= descriptor_write_max) [[unlikely]] {
+    if (descriptor_info_end >= descriptor_write_max || descriptor_write_end >= descriptor_write_max)
+        [[unlikely]] {
         Flush();
     }
 
-    auto& buffer_info = descriptor_infos[descriptor_write_end].buffer_info;
+    const u32 info_index = descriptor_info_end++;
+    auto& buffer_info = descriptor_infos[info_index].buffer_info;
     buffer_info.buffer = buffer;
     buffer_info.offset = offset;
     buffer_info.range = size;
@@ -90,11 +110,13 @@ void DescriptorUpdateQueue::AddBuffer(vk::DescriptorSet target, u8 binding, vk::
 
 void DescriptorUpdateQueue::AddTexelBuffer(vk::DescriptorSet target, u8 binding,
                                            vk::BufferView buffer_view) {
-    if (descriptor_write_end >= descriptor_write_max) [[unlikely]] {
+    if (descriptor_info_end >= descriptor_write_max || descriptor_write_end >= descriptor_write_max)
+        [[unlikely]] {
         Flush();
     }
 
-    auto& buffer_info = descriptor_infos[descriptor_write_end].buffer_view;
+    const u32 info_index = descriptor_info_end++;
+    auto& buffer_info = descriptor_infos[info_index].buffer_view;
     buffer_info = buffer_view;
     descriptor_writes[descriptor_write_end++] = vk::WriteDescriptorSet{
         .dstSet = target,

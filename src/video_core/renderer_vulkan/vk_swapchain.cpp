@@ -245,7 +245,7 @@ void Swapchain::SetSurfaceProperties() {
     image_count = capabilities.minImageCount + 1;
 #ifdef ANDROID
     if (Settings::values.async_presentation.GetValue()) {
-        image_count = std::max(image_count, 4u);
+        image_count = std::max(image_count, 3u);
     }
 #endif
     if (capabilities.maxImageCount > 0) {

@@ -64,11 +64,6 @@ public:
     /// Switches the disk resources to the specified title
     void SwitchDiskResources(u64 title_id) override;
 
-    /// Updates GPU queue time based on frame presentation
-    void UpdateGpuQueueTime(s64 queue_time) {
-        gpu_queue_time = queue_time;
-    }
-
 private:
     /// Syncs pipeline state from PICA registers
     void SyncDrawState();
@@ -147,7 +142,6 @@ private:
     u32 uniform_size_aligned_fs;
     bool async_shaders{false};
     u32 frames_since_worker_wait{};
-    s64 gpu_queue_time = 0;
 
     /// Index buffer dirty tracking: skip redundant bindIndexBuffer calls when
     /// consecutive indexed draws use the same offset and type.

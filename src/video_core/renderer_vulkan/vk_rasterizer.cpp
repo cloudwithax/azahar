@@ -144,13 +144,13 @@ void RasterizerVulkan::TickFrame() {
     // On Android with async presentation the present thread handles GPU pacing.
     // The emulation thread should never sleep waiting for the GPU — that directly
     // translates to lost game speed on slow GPUs (RK3568 Mali). Only sync every
-    // 32 frames to reclaim finished command buffers and avoid resource exhaustion.
-    if (++frames_since_worker_wait >= 32) {
-        scheduler.WaitWorker(0);
+    // 48 frames to reclaim finished command buffers and avoid resource exhaustion.
+    if (++frames_since_worker_wait >= 48) {
+        scheduler.WaitWorker();
         frames_since_worker_wait = 0;
     }
 #else
-    scheduler.WaitWorker(0);
+    scheduler.WaitWorker();
 #endif
     res_cache.TickFrame();
     // Invalidate caches — descriptor sets may be recycled after frame boundary
