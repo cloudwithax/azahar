@@ -184,7 +184,18 @@ void RasterizerVulkan::LoadDefaultDiskResources(
 }
 
 void RasterizerVulkan::SyncDrawState() {
+    // Save the framebuffer and rasterizer dirty bits before SyncDrawUniforms
+    // consumes them with Reset(). If nothing in those groups changed, the
+    // rasterizer/depth-stencil snapshots from the previous draw are still
+    // valid and we can skip the snapshot construction.
+    const u64 pre_rast = pica.dirty_regs.rasterizer;
+    const u64 pre_fb = pica.dirty_regs.framebuffer;
+
     SyncDrawUniforms();
+
+    if (!(pre_rast | pre_fb) && prev_rast_snapshot != ~0ULL) {
+        return;
+    }
 
     // Build compact snapshots of the PICA registers we care about and compare
     // against the previous draw. On Cortex-A55 (in-order), the ~20 bitfield
@@ -195,12 +206,21 @@ void RasterizerVulkan::SyncDrawState() {
     const auto& fb = regs.framebuffer.framebuffer;
     const auto& blend = om.alpha_blending;
 
+    const auto& stencil_test = om.stencil_test;
+    // Pre-compute the effective color write mask from depth_color_mask
+    // before building the snapshot, so we can pack it into rast_snapshot
+    // and eliminate the separate prev_depth_color_mask comparison.
+    const u32 color_write_mask = fb.allow_color_write != 0
+                                     ? (om.depth_color_mask >> 8) & 0xF
+                                     : 0;
+
     // Quick check: hash the raw register words we depend on. If unchanged
     // from the last draw, the pipeline_info is already up to date.
     const u64 rast_snapshot =
         static_cast<u64>(regs.rasterizer.cull_mode.Value()) |
         (static_cast<u64>(fb.IsFlipped()) << 3) |
         (static_cast<u64>(om.alphablend_enable) << 4) |
+        (static_cast<u64>(color_write_mask) << 5) |
         (static_cast<u64>(blend.blend_equation_rgb.Value()) << 8) |
         (static_cast<u64>(blend.blend_equation_a.Value()) << 12) |
         (static_cast<u64>(blend.factor_source_rgb.Value()) << 16) |
@@ -212,7 +232,6 @@ void RasterizerVulkan::SyncDrawState() {
         (static_cast<u64>(fb.allow_depth_stencil_write) << 37) |
         (static_cast<u64>(fb.depth_format.Value()) << 40);
 
-    const auto& stencil_test = om.stencil_test;
     const u64 ds_snapshot =
         static_cast<u64>(stencil_test.enable) |
         (static_cast<u64>(stencil_test.func.Value()) << 1) |
@@ -227,14 +246,12 @@ void RasterizerVulkan::SyncDrawState() {
         (static_cast<u64>(om.depth_test_func.Value()) << 44);
 
     if (rast_snapshot == prev_rast_snapshot && ds_snapshot == prev_ds_snapshot &&
-        om.blend_const.raw == prev_blend_color &&
-        om.depth_color_mask == prev_depth_color_mask) {
+        om.blend_const.raw == prev_blend_color) {
         return;
     }
     prev_rast_snapshot = rast_snapshot;
     prev_ds_snapshot = ds_snapshot;
     prev_blend_color = om.blend_const.raw;
-    prev_depth_color_mask = om.depth_color_mask;
 
     // SyncCullMode();
     pipeline_info.state.rasterization.cull_mode.Assign(regs.rasterizer.cull_mode);
@@ -252,10 +269,7 @@ void RasterizerVulkan::SyncDrawState() {
     pipeline_info.dynamic_info.blend_color = om.blend_const.raw;
     // SyncLogicOp + SyncColorWriteMask();
     pipeline_info.state.blending.logic_op = om.logic_op;
-    const u32 color_mask = fb.allow_color_write != 0
-                               ? (om.depth_color_mask >> 8) & 0xF
-                               : 0;
-    pipeline_info.state.blending.color_write_mask = color_mask;
+    pipeline_info.state.blending.color_write_mask = color_write_mask;
 
     // SyncStencilTest();
     const bool test_enable = stencil_test.enable && fb.depth_format ==
@@ -495,10 +509,28 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         return false;
     }
 
-    // Vertex data setup might involve scheduler flushes so perform it
-    // early to avoid invalidating our state in the middle of the draw.
-    vertex_info = AnalyzeVertexArray(is_indexed, instance.GetMinVertexStrideAlignment());
-    SetupVertexArray();
+    // Compute a lightweight hash over the vertex and index configuration
+    // BEFORE AnalyzeVertexArray so we can skip index buffer scanning entirely
+    // when the cache is valid. Uses only PICA register inputs — no dependency
+    // on vertex_info. When this hash matches and vertex_descriptors_valid is
+    // true, the vertex data from the previous draw is still in the stream
+    // buffer at the same offsets, and the vertex bounds are unchanged.
+    u64 vtx_hash = static_cast<u64>(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress());
+    vtx_hash ^= static_cast<u64>(regs.pipeline.num_vertices) << 20;
+    if (is_indexed) {
+        vtx_hash ^= static_cast<u64>(regs.pipeline.index_array.offset) << 32;
+        vtx_hash ^= static_cast<u64>(regs.pipeline.index_array.format) << 48;
+    } else {
+        vtx_hash ^= static_cast<u64>(regs.pipeline.vertex_offset) << 32;
+    }
+
+    if (vtx_hash != prev_vertex_config_hash || !vertex_descriptors_valid) {
+        // Vertex data setup might involve scheduler flushes so perform it
+        // early to avoid invalidating our state in the middle of the draw.
+        vertex_info = AnalyzeVertexArray(is_indexed, instance.GetMinVertexStrideAlignment());
+        SetupVertexArray();
+        prev_vertex_config_hash = vtx_hash;
+    }
 
     if (!SetupVertexShader()) {
         return false;
@@ -517,39 +549,55 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     bool need_index_bind = false;
 
     if (is_indexed) {
-        // Inline the index array setup to avoid a separate scheduler.Record
-        // call. On Cortex-A55 each Record call costs ~200ns (placement new +
-        // virtual dispatch), so merging the index bind into the draw Record
-        // saves one call per indexed draw.
-        const bool index_u8 = regs.pipeline.index_array.format == 0;
-        const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
-        const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1 : 2);
-        index_type_val = native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
+        // Compute the same hash used in AccelerateDrawBatch to detect
+        // unchanged vertex+index configuration. When the hash matches and
+        // vertex_descriptors_valid is true, the index data from a prior
+        // draw is still present in the stream buffer at last_index_buffer_offset.
+        u64 idx_hash = static_cast<u64>(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress());
+        idx_hash ^= static_cast<u64>(regs.pipeline.num_vertices) << 20;
+        idx_hash ^= static_cast<u64>(regs.pipeline.index_array.offset) << 32;
+        idx_hash ^= static_cast<u64>(regs.pipeline.index_array.format) << 48;
 
-        const u8* index_data =
-            memory.GetPhysicalPointer(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
-                                      regs.pipeline.index_array.offset);
-
-        auto [index_ptr, index_offset, _] = stream_buffer.Map(index_buffer_size, 2);
-        index_offset_val = index_offset;
-
-        if (index_u8 && !native_u8) {
-            u16* index_ptr_u16 = reinterpret_cast<u16*>(index_ptr);
-            for (u32 i = 0; i < regs.pipeline.num_vertices; i++) {
-                index_ptr_u16[i] = index_data[i];
-            }
+        const bool skip_copy =
+            (idx_hash == prev_vertex_config_hash && vertex_descriptors_valid);
+        if (skip_copy) {
+            index_offset_val = last_index_buffer_offset;
+            index_type_val = last_index_buffer_type;
         } else {
-            std::memcpy(index_ptr, index_data, index_buffer_size);
-        }
+            // Inline the index array setup to avoid a separate scheduler.Record
+            // call. On Cortex-A55 each Record call costs ~200ns (placement new +
+            // virtual dispatch), so merging the index bind into the draw Record
+            // saves one call per indexed draw.
+            const bool index_u8 = regs.pipeline.index_array.format == 0;
+            const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
+            const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1 : 2);
+            index_type_val = native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
 
-        stream_buffer.Commit(index_buffer_size);
+            const u8* index_data =
+                memory.GetPhysicalPointer(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
+                                          regs.pipeline.index_array.offset);
 
-        // Only bind if offset or type changed since last draw.
-        if (index_offset_val != last_index_buffer_offset ||
-            index_type_val != last_index_buffer_type) {
-            last_index_buffer_offset = index_offset_val;
-            last_index_buffer_type = index_type_val;
-            need_index_bind = true;
+            auto [index_ptr, index_offset, _] = stream_buffer.Map(index_buffer_size, 2);
+            index_offset_val = index_offset;
+
+            if (index_u8 && !native_u8) {
+                u16* index_ptr_u16 = reinterpret_cast<u16*>(index_ptr);
+                for (u32 i = 0; i < regs.pipeline.num_vertices; i++) {
+                    index_ptr_u16[i] = index_data[i];
+                }
+            } else {
+                std::memcpy(index_ptr, index_data, index_buffer_size);
+            }
+
+            stream_buffer.Commit(index_buffer_size);
+
+            // Only bind if offset or type changed since last draw.
+            if (index_offset_val != last_index_buffer_offset ||
+                index_type_val != last_index_buffer_type) {
+                last_index_buffer_offset = index_offset_val;
+                last_index_buffer_type = index_type_val;
+                need_index_bind = true;
+            }
         }
     }
 
@@ -585,42 +633,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
     });
 
+    vertex_descriptors_valid = true;
+
     return true;
-}
-
-void RasterizerVulkan::SetupIndexArray() {
-    const bool index_u8 = regs.pipeline.index_array.format == 0;
-    const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
-    const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1 : 2);
-    const vk::IndexType index_type = native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
-
-    const u8* index_data =
-        memory.GetPhysicalPointer(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
-                                  regs.pipeline.index_array.offset);
-
-    auto [index_ptr, index_offset, _] = stream_buffer.Map(index_buffer_size, 2);
-
-    if (index_u8 && !native_u8) {
-        u16* index_ptr_u16 = reinterpret_cast<u16*>(index_ptr);
-        for (u32 i = 0; i < regs.pipeline.num_vertices; i++) {
-            index_ptr_u16[i] = index_data[i];
-        }
-    } else {
-        std::memcpy(index_ptr, index_data, index_buffer_size);
-    }
-
-    stream_buffer.Commit(index_buffer_size);
-
-    // Skip redundant index buffer rebinds — back-to-back indexed draws with
-    // the same offset and type (common in MK7 track geometry) save a command.
-    if (index_offset != last_index_buffer_offset || index_type != last_index_buffer_type) {
-        last_index_buffer_offset = index_offset;
-        last_index_buffer_type = index_type;
-        scheduler.Record(
-            [this, index_offset = index_offset, index_type = index_type](vk::CommandBuffer cmdbuf) {
-                cmdbuf.bindIndexBuffer(stream_buffer.Handle(), index_offset, index_type);
-            });
-    }
 }
 
 void RasterizerVulkan::DrawTriangles() {
@@ -659,8 +674,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         return true;
     }
 
-    pipeline_info.state.attachments.color = framebuffer->Format(SurfaceType::Color);
-    pipeline_info.state.attachments.depth = framebuffer->Format(SurfaceType::Depth);
+    if (framebuffer != prev_framebuffer) {
+        pipeline_info.state.attachments.color = framebuffer->Format(SurfaceType::Color);
+        pipeline_info.state.attachments.depth = framebuffer->Format(SurfaceType::Depth);
+    }
 
     // Update scissor uniforms
     const auto [scissor_x1, scissor_y2, scissor_x2, scissor_y1] = fb_helper.Scissor();
@@ -710,7 +727,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             SyncTextureUnits(framebuffer);
         }
     }
-    SyncUtilityTextures(framebuffer);
+    if (shadow_rendering) {
+        SyncUtilityTextures(framebuffer);
+    }
 
     // Sync and bind the shader (skip if no FS-relevant registers changed)
     if (fs_config_changed) {
@@ -890,6 +909,7 @@ void RasterizerVulkan::FlushAll() {
 
 void RasterizerVulkan::FlushRegion(PAddr addr, u32 size) {
     res_cache.FlushRegion(addr, size);
+    vertex_descriptors_valid = false;
 }
 
 void RasterizerVulkan::InvalidateRegion(PAddr addr, u32 size) {

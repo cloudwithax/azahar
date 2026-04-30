@@ -100,9 +100,6 @@ private:
     /// Internal implementation for AccelerateDrawBatch
     bool AccelerateDrawBatchInternal(bool is_indexed);
 
-    /// Setup index array for AccelerateDrawBatch
-    void SetupIndexArray();
-
     /// Setup vertex array for AccelerateDrawBatch
     void SetupVertexArray();
 
@@ -160,7 +157,6 @@ private:
     u64 prev_rast_snapshot{~0ULL};
     u64 prev_ds_snapshot{~0ULL};
     u32 prev_blend_color{~0u};
-    u32 prev_depth_color_mask{~0u};
 
     /// Texture unit dirty tracking: hash of PICA texture register state from the previous
     /// draw call. When the hash matches, we can reuse the existing texture descriptor set

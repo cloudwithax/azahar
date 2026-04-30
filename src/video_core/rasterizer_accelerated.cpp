@@ -145,16 +145,28 @@ void RasterizerAccelerated::SyncDrawUniforms() {
     const bool prev_flipped = std::exchange(vs_data.flip_viewport, is_flipped);
     vs_data_dirty = is_flipped != prev_flipped;
 
-    // Fast path: if no PICA registers have been written since the last draw,
-    // skip all the dirty flag checks. On Cortex-A55, this saves ~10 branch
-    // evaluations and avoids touching the dirty_regs cache lines.
+    // Fast path: if no uniform-relevant PICA registers have been written since
+    // the last draw, skip all the dirty flag checks. Only qwords for rasterizer,
+    // tex_units, texenv, framebuffer, lights and light_lut affect uniforms;
+    // misc (qword 0), geo_pipeline (qwords 8-9) and shader (qwords 10-11) are
+    // irrelevant — skipping them saves ~7 qword loads and ~3 cache line touches
+    // on Cortex-A55. Reset dirty_regs so stale non-uniform dirty bits don't
+    // leak into future draws, and clear the fs_config/tex_units flags so
+    // UseFragmentShader and SyncTextureUnits aren't retriggered by stale state.
     {
-        bool any_dirty = false;
-        for (const auto& qw : dirty.qwords) {
-            any_dirty |= (qw != 0);
-        }
+        u64 any_dirty = dirty.rasterizer | dirty.tex_units | dirty.texenv | dirty.framebuffer;
+        any_dirty |= dirty.light_lut;
         if (!any_dirty) {
-            return;
+            bool lights_dirty = false;
+            for (const auto& l : dirty.lights) {
+                if (l) { lights_dirty = true; break; }
+            }
+            if (!lights_dirty) {
+                tex_units_changed = false;
+                fs_config_changed = false;
+                pica.dirty_regs.Reset();
+                return;
+            }
         }
     }
 

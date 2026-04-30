@@ -30,7 +30,8 @@ struct RenderPass {
         return std::tie(framebuffer, render_pass, render_area, do_clear) ==
                    std::tie(other.framebuffer, other.render_pass, other.render_area,
                             other.do_clear) &&
-               std::memcmp(&clear, &other.clear, sizeof(vk::ClearValue)) == 0;
+               (!do_clear ||
+                std::memcmp(&clear, &other.clear, sizeof(vk::ClearValue)) == 0);
     }
 };
 
