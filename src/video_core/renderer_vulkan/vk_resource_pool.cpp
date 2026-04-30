@@ -60,7 +60,7 @@ std::size_t ResourcePool::ManageOverflow() {
     return old_capacity;
 }
 
-constexpr std::size_t COMMAND_BUFFER_POOL_SIZE = 4;
+constexpr std::size_t COMMAND_BUFFER_POOL_SIZE = 16;
 
 CommandPool::CommandPool(const Instance& instance, MasterSemaphore* master_semaphore)
     : ResourcePool{master_semaphore, COMMAND_BUFFER_POOL_SIZE}, instance{instance} {
@@ -104,7 +104,7 @@ vk::CommandBuffer CommandPool::Commit() {
     return cmd_buffers[index];
 }
 
-constexpr u32 DESCRIPTOR_SET_BATCH = 64;
+constexpr u32 DESCRIPTOR_SET_BATCH = 128;
 constexpr u32 DESCRIPTOR_MULTIPLIER = 4; // Increase capacity of each pool
 
 DescriptorHeap::DescriptorHeap(const Instance& instance, MasterSemaphore* master_semaphore,

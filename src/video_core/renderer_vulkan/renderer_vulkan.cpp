@@ -289,7 +289,7 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
 
 bool RendererVulkan::TryRenderToWindow(PresentWindow& window,
                                        const Layout::FramebufferLayout& layout, bool flipped) {
-    Frame* frame = window.TryGetRenderFrame();
+    Frame* frame = window.GetRenderFrame();
     if (!frame) {
         return false;
     }
@@ -306,7 +306,7 @@ void RendererVulkan::FinalizeFrame() {
 bool RendererVulkan::TrySwapBuffers() {
     system.perf_stats->StartSwap();
     const Layout::FramebufferLayout& layout = render_window.GetFramebufferLayout();
-    Frame* frame = main_present_window.TryGetRenderFrame();
+    Frame* frame = main_present_window.GetRenderFrame();
     if (!frame) {
         // GPU is busy — skip presentation work, but still advance frame
         // bookkeeping so cache GC and periodic worker draining keep up.
@@ -398,17 +398,16 @@ void RendererVulkan::CompileShaders() {
     cursor_fragment_shader =
         Compile(HostShaders::VULKAN_CURSOR_FRAG, vk::ShaderStageFlagBits::eFragment, device);
 
-    auto properties = instance.GetPhysicalDevice().getProperties();
     for (std::size_t i = 0; i < present_samplers.size(); i++) {
-        const vk::Filter filter_mode = i == 0 ? vk::Filter::eLinear : vk::Filter::eNearest;
+        const vk::Filter filter_mode = vk::Filter::eNearest;
         const vk::SamplerCreateInfo sampler_info = {
             .magFilter = filter_mode,
             .minFilter = filter_mode,
-            .mipmapMode = vk::SamplerMipmapMode::eLinear,
+            .mipmapMode = vk::SamplerMipmapMode::eNearest,
             .addressModeU = vk::SamplerAddressMode::eClampToEdge,
             .addressModeV = vk::SamplerAddressMode::eClampToEdge,
-            .anisotropyEnable = instance.IsAnisotropicFilteringSupported(),
-            .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+            .anisotropyEnable = false,
+            .maxAnisotropy = 1.0f,
             .compareEnable = false,
             .compareOp = vk::CompareOp::eAlways,
             .borderColor = vk::BorderColor::eIntOpaqueBlack,

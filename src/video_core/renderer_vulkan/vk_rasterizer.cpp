@@ -32,9 +32,9 @@ using VideoCore::SurfaceType;
 using namespace Common::Literals;
 using namespace Pica::Shader::Generator;
 
-constexpr u64 STREAM_BUFFER_SIZE = 64_MiB;
-constexpr u64 UNIFORM_BUFFER_SIZE = 8_MiB;
-constexpr u64 TEXTURE_BUFFER_SIZE = 2_MiB;
+constexpr u64 STREAM_BUFFER_SIZE = 128_MiB;
+constexpr u64 UNIFORM_BUFFER_SIZE = 16_MiB;
+constexpr u64 TEXTURE_BUFFER_SIZE = 4_MiB;
 
 constexpr vk::BufferUsageFlags BUFFER_USAGE =
     vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer;
@@ -140,12 +140,12 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 RasterizerVulkan::~RasterizerVulkan() = default;
 
 void RasterizerVulkan::TickFrame() {
-#ifdef ANDROID
+#if defined(ANDROID) || defined(HAVE_LIBRETRO)
     // On Android with async presentation the present thread handles GPU pacing.
     // The emulation thread should never sleep waiting for the GPU — that directly
     // translates to lost game speed on slow GPUs (RK3568 Mali). Only sync every
-    // 32 frames to reclaim finished command buffers and avoid resource exhaustion.
-    if (++frames_since_worker_wait >= 32) {
+    // 64 frames to reclaim finished command buffers and avoid resource exhaustion.
+    if (++frames_since_worker_wait >= 64) {
         scheduler.WaitWorker(0);
         frames_since_worker_wait = 0;
     }

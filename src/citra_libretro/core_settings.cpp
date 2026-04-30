@@ -338,7 +338,7 @@ static constexpr retro_core_option_v2_definition option_definitions[] = {
             { config::disabled, "Disabled" },
             { nullptr, nullptr }
         },
-        config::enabled
+        config::disabled
     },
     {
         config::graphics::use_disk_shader_cache,
@@ -915,7 +915,7 @@ static void ParseGraphicsOptions(void) {
 #endif
 
     Settings::values.shaders_accurate_mul =
-        LibRetro::FetchVariable(config::graphics::shaders_accurate_mul, config::enabled) ==
+        LibRetro::FetchVariable(config::graphics::shaders_accurate_mul, config::disabled) ==
         config::enabled;
 
     Settings::values.use_disk_shader_cache =

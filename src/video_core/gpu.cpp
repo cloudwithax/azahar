@@ -418,7 +418,11 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
     // Attempt a non-blocking frame present. If the GPU is still busy with the
     // previous frame, skip this one — the game runs at full speed with dropped
     // frames rather than half speed with every frame rendered.
-    impl->renderer->TrySwapBuffers();
+    (impl->system.perf_stats->GetStableFrameTimeScale() < 0.98 ||
+     ((impl->timing.GetGlobalTicks() / FRAME_TICKS) &
+      (impl->system.perf_stats->GetStableFrameTimeScale() > 1.15 ? 3 : 1)) == 0)
+        ? impl->renderer->TrySwapBuffers()
+        : false;
 }
 
 void GPU::RecreateRenderer(Frontend::EmuWindow& emu_window, Frontend::EmuWindow* secondary_window) {

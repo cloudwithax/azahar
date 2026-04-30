@@ -640,7 +640,7 @@ Frame* PresentWindow::GetRenderFrame() {
     }
 
     // LibRetro synchronization: Use LibRetro's wait mechanism instead of fences
-    if (vulkan_intf && vulkan_intf->wait_sync_index && vulkan_intf->handle) {
+    if (false && vulkan_intf && vulkan_intf->wait_sync_index && vulkan_intf->handle) {
         vulkan_intf->wait_sync_index(vulkan_intf->handle);
     }
 

@@ -32,7 +32,7 @@ u32 RendererBase::GetRequestedResolutionScaleFactor() const {
 
 u32 RendererBase::GetResolutionScaleFactor() {
     const u32 requested_scale = GetRequestedResolutionScaleFactor();
-#if defined(ANDROID)
+#if defined(ANDROID) || defined(HAVE_LIBRETRO)
     if (Settings::values.graphics_api.GetValue() == Settings::GraphicsAPI::Vulkan &&
         adaptive_resolution_cap != 0) {
         return std::min(requested_scale, adaptive_resolution_cap);
@@ -42,7 +42,7 @@ u32 RendererBase::GetResolutionScaleFactor() {
 }
 
 void RendererBase::ResetAdaptivePerformanceControls() {
-#if defined(ANDROID)
+#if defined(ANDROID) || defined(HAVE_LIBRETRO)
     adaptive_resolution_cap = 0;
     slow_frame_streak = 0;
     fast_frame_streak = 0;
@@ -68,7 +68,7 @@ u32 RendererBase::GetAdaptiveQualityMaxLevel() const {
 }
 
 void RendererBase::ApplyAdaptiveQualityLevel(u32 level) {
-#if defined(ANDROID)
+#if defined(ANDROID) || defined(HAVE_LIBRETRO)
     const u32 clamped_level = std::min(level, GetAdaptiveQualityMaxLevel());
     u32 remaining = clamped_level;
 
@@ -120,7 +120,7 @@ void RendererBase::ApplyAdaptiveQualityLevel(u32 level) {
 
 void RendererBase::UpdateAdaptiveQualityControls(double frame_scale, u32 requested_scale,
                                                  u32 effective_scale) {
-#if defined(ANDROID)
+#if defined(ANDROID) || defined(HAVE_LIBRETRO)
     if (adaptive_quality_level == 0) {
         adaptive_requested_shaders_accurate_mul = Settings::values.shaders_accurate_mul.GetValue();
         adaptive_requested_texture_filter = Settings::values.texture_filter.GetValue();
@@ -136,10 +136,10 @@ void RendererBase::UpdateAdaptiveQualityControls(double frame_scale, u32 request
     }
 
     const bool at_native_floor = effective_scale <= 1;
-    constexpr double QualityOverloadThreshold = 1.08;
+    constexpr double QualityOverloadThreshold = 1.03;
     constexpr double QualityRecoveryThreshold = 0.90;
-    constexpr u32 SlowFramesToShedQuality = 75;
-    constexpr u32 FastFramesToRestoreQuality = 300;
+    constexpr u32 SlowFramesToShedQuality = 20;
+    constexpr u32 FastFramesToRestoreQuality = 600;
 
     if (at_native_floor && frame_scale > QualityOverloadThreshold) {
         adaptive_quality_slow_streak =
@@ -174,7 +174,7 @@ void RendererBase::UpdateAdaptiveResolutionScale() {
     const double frame_scale = system.perf_stats->GetStableFrameTimeScale();
     current_fps = frame_scale > 0.0 ? static_cast<f32>(SCREEN_REFRESH_RATE / frame_scale) : 0.0f;
 
-#if defined(ANDROID)
+#if defined(ANDROID) || defined(HAVE_LIBRETRO)
     if (Settings::values.graphics_api.GetValue() != Settings::GraphicsAPI::Vulkan) {
         ResetAdaptivePerformanceControls();
         return;
@@ -190,10 +190,10 @@ void RendererBase::UpdateAdaptiveResolutionScale() {
         slow_frame_streak = 0;
         fast_frame_streak = 0;
     } else {
-        constexpr double OverloadThreshold = 1.12;
+        constexpr double OverloadThreshold = 1.05;
         constexpr double RecoveryThreshold = 0.92;
-        constexpr u32 SlowFramesToStepDown = 45;
-        constexpr u32 FastFramesToStepUp = 240;
+        constexpr u32 SlowFramesToStepDown = 20;
+        constexpr u32 FastFramesToStepUp = 600;
 
         if (frame_scale > OverloadThreshold) {
             slow_frame_streak = std::min(slow_frame_streak + 1, SlowFramesToStepDown);

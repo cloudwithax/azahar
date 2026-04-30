@@ -42,7 +42,7 @@ void Scheduler::CommandChunk::ExecuteAll(vk::CommandBuffer cmdbuf) {
         command = next;
     }
     submit = false;
-    command_offset = 0;
+    recorded_counts = command_offset = 0;
     first = nullptr;
     last = nullptr;
 }
